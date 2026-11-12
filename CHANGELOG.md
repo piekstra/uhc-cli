@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- On medical-common v0.2.0 and cli-common v0.31.1. `records export -o`
+  renames the stream into place only once it is written: a complete one
+  replaces `records.ndjson`, an incomplete one goes to
+  `records.incomplete.ndjson` and the last complete export stays, and a
+  failed write leaves nothing behind.
+
 ## v0.1.0
 
 The first release. `uhc` reads the UnitedHealthcare Explanation of Benefits

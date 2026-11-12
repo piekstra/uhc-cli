@@ -636,6 +636,12 @@ fn an_export_file_is_private_and_replaced_safely() {
         .assert()
         .success();
     assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    // The stream is renamed into place on commit: nothing else is left.
+    let names: Vec<String> = std::fs::read_dir(&out)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["records.ndjson"]);
     let elsewhere = tmp("elsewhere").join("target.txt");
     std::fs::write(&elsewhere, "untouched").unwrap();
     std::fs::remove_file(&path).unwrap();
