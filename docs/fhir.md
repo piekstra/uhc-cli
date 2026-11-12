@@ -82,9 +82,12 @@ and the text "Out-of-pocket limit".
 
 ## The stream
 
-`records-stream/v1`: a header with `method` `portal`, the organization
+`records-stream/v1`, written by medical-common's `RecordsWriter`
+(`pk-med-records`): a header with `method` `portal`, the organization
 `{id: "uhc", name: "UnitedHealthcare", fhir_base: "https://member.uhc.com/myuhc", vendor: "uhc"}`
-and the patient `{id, organization, label, relationship}`; then the
+and the patient (`PatientContext`: `id`, `organization`, `label`, `kind`
+`member`, `member_role` `subscriber` or `dependent`, `relationship` `self`
+for the subscriber); then the
 resources in the order above; then `records-stream-end/v1` with counts. A
 statement read with issues adds a `skipped[]` entry with code
 `statement_issues` naming the document and the issue codes.
@@ -93,4 +96,5 @@ statement read with issues adds a `skipped[]` entry with code
 is dated D or later (a claim with no statement date counts by its service
 date), and the statements dated D or later that carry them. A claim
 serviced in March and adjudicated on an April statement is in
-`--since <April>`.
+`--since <April>`. `Patient`, `Organization` and `Coverage` are exported
+whatever the date, and the header names them in `since_unbounded`.

@@ -341,6 +341,32 @@ impl Book {
     }
 
     /// The full name a statement addressed to this member prints.
+    /// The members a statement is a document of, as (member id, label): those
+    /// with a claim on it, in the order printed, else the member it is
+    /// addressed to. Each is one `DocumentReference` in the export.
+    pub fn document_members(&self, f: &StatementFile) -> Vec<(String, String)> {
+        let mid = Self::member_id(f);
+        let mut out: Vec<(String, String)> = Vec::new();
+        for c in &f.statement.claims {
+            let id = patient_id(&mid, &c.patient);
+            if !out.iter().any(|(i, _)| *i == id) {
+                out.push((id, title(&c.patient)));
+            }
+        }
+        if out.is_empty() {
+            if let Some(first) = f
+                .statement
+                .member
+                .name
+                .as_deref()
+                .and_then(|n| n.split_whitespace().next())
+            {
+                out.push((patient_id(&mid, first), title(first)));
+            }
+        }
+        out
+    }
+
     pub fn full_name(&self, patient: &str) -> Option<String> {
         self.files.iter().rev().find_map(|f| {
             let name = f.statement.member.name.as_deref()?;

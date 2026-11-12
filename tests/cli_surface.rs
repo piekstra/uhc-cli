@@ -125,7 +125,8 @@ fn a_command_without_an_import_folder_says_how_to_set_one() {
         vec!["accumulators"],
         vec!["documents", "list"],
         vec!["import", "check"],
-        vec!["records", "export", "--patient", "x", "--ndjson"],
+        // -o, not --ndjson: --json with the stream is refused first.
+        vec!["records", "export", "--patient", "x", "-o", "never-created"],
     ] {
         let out = uhc().args(&args).arg("--json").assert().code(2);
         let e = error_of(&out);
@@ -292,4 +293,13 @@ fn there_is_no_write_command() {
     for verb in ["submit", "appeal", "pay ", "upload", "mcp"] {
         assert!(!help.contains(verb), "help mentions {verb}");
     }
+}
+
+#[test]
+fn the_stream_is_the_output_so_json_with_ndjson_is_a_usage_error() {
+    let out = uhc()
+        .args(["--json", "records", "export", "--patient", "x", "--ndjson"])
+        .assert()
+        .code(2);
+    assert_eq!(error_of(&out)["error"]["code"], "usage");
 }

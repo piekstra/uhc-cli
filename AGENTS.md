@@ -19,7 +19,6 @@ It conforms to piekstra-cli/1 and the `health-records/v1` and
 | `src/cents.rs` | statement amounts as integer cents |
 | `src/model.rs` | statements combined: members, claims (latest version wins), balances |
 | `src/fhir.rs` | the CARIN-shaped FHIR mapping (`docs/fhir.md`) |
-| `src/stream.rs` | the `records-stream/v1` writer, until `pk-med-records` is pinned |
 | `src/synth.rs` | a minimal text PDF writer, for the synthetic statements only |
 | `docs/api.md` | how UHC data can be reached, with UHC's own wording, and the traps |
 
