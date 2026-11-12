@@ -117,7 +117,8 @@ pub struct ExportArgs {
     /// after it.
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub since: Option<String>,
-    /// Write the stream to stdout (`| medrec import --from uhc`).
+    /// Write the stream to stdout (`| medrec import --from uhc`). The stream
+    /// is the output, so --json with it is a usage error.
     #[arg(long, conflicts_with = "output")]
     pub ndjson: bool,
     /// Write the stream to DIR/records.ndjson instead (synthetic statements
@@ -170,11 +171,15 @@ pub enum DocumentsCmd {
 
 #[derive(Args, Debug)]
 pub struct DownloadArgs {
-    /// The document id from `uhc documents list`.
+    /// A document id from `uhc documents list`, all of it or a prefix, or a
+    /// prefix of the statement id `uhc claims list` shows (6 characters or
+    /// more).
     #[arg(required_unless_present = "all", conflicts_with = "all")]
     pub id: Option<String>,
-    /// Every statement. Ones already saved in the folder (same bytes) are
-    /// skipped, listed in skipped[] with code `exists`, unless --overwrite.
+    /// Every document. A statement carrying two members' claims is two rows
+    /// naming one file, written once. Files already saved in the folder
+    /// (same bytes) are skipped, listed in skipped[] with code `exists`,
+    /// unless --overwrite.
     #[arg(long)]
     pub all: bool,
     /// The file to write (`-` for stdout), or with `--all` the folder.

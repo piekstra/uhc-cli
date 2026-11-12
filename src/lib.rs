@@ -8,5 +8,4 @@ pub mod eob;
 pub mod fhir;
 pub mod files;
 pub mod model;
-pub mod stream;
 pub mod synth;

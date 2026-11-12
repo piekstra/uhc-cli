@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use base64::Engine;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 fn have_pdftotext() -> bool {
     std::process::Command::new("pdftotext").arg("-v").output().is_ok()
@@ -116,10 +116,18 @@ fn patients_are_the_subscriber_and_dependents() {
     let labels: Vec<&str> = items.iter().map(|m| m["label"].as_str().unwrap()).collect();
     assert_eq!(labels, ["Alex", "Jordan", "Sam"]);
     let alex = &items[0];
+    assert_eq!(alex["kind"], "member");
+    assert_eq!(alex["member_role"], "subscriber");
     assert_eq!(alex["relationship"], "self");
     assert_eq!(alex["organization"], "uhc");
     assert_eq!(alex["claims"], 2);
-    assert_eq!(items[2]["relationship"], "spouse");
+    let sam = &items[2];
+    assert_eq!(sam["member_role"], "dependent");
+    assert_eq!(sam["coverage_relationship"], "spouse");
+    assert!(
+        sam.get("relationship").is_none(),
+        "a dependant is not the account holder"
+    );
     assert!(alex["id"].as_str().unwrap().starts_with('m'));
 }
 
@@ -231,6 +239,10 @@ fn records_export_since_is_what_changed_since() {
     assert_eq!(trailer["counts"]["DocumentReference"], 1);
     assert!(lines.iter().any(|r| r["id"] == "cSYNC00000003"));
     assert_eq!(lines[0]["since"], "2026-04-15");
+    assert_eq!(
+        lines[0]["since_unbounded"],
+        json!(["Coverage", "Organization", "Patient"])
+    );
     // An unpadded date means the same day.
     let lines = export("2026-4-15");
     assert_eq!(lines[0]["since"], "2026-04-15");
@@ -252,7 +264,10 @@ fn records_export_to_a_folder_is_for_synthetic_statements_only() {
             .arg(&out),
     );
     assert_eq!(v["schema"], "records-export/v1");
-    assert!(out.join("records.ndjson").is_file());
+    assert_eq!(v["complete"], true);
+    let written = std::fs::metadata(out.join("records.ndjson")).unwrap().len();
+    assert_eq!(v["bytes"], written, "bytes is the whole file");
+    assert_eq!(v["counts"]["ExplanationOfBenefit"], 2);
 
     // The same statement without the synthetic marker is refused.
     let unmarked = tmp("unmarked");
@@ -342,12 +357,40 @@ fn documents_list_and_download() {
     let v = json_of(uhc(&dir).args(["documents", "list"]));
     assert_eq!(v["schema"], "document-list/v1");
     let items = v["items"].as_array().unwrap();
-    assert_eq!(items.len(), 3);
+    // A row per DocumentReference: the 03/14 statement carries Alex's and
+    // Jordan's claims, so it is a document of each.
+    assert_eq!(items.len(), 4);
     assert_eq!(items[0]["date"], "2026-05-08", "newest first");
+    let shared: Vec<&Value> = items.iter().filter(|d| d["date"] == "2026-03-14").collect();
+    assert_eq!(shared.len(), 2);
+    assert_ne!(shared[0]["id"], shared[1]["id"]);
+    assert_eq!(shared[0]["file"], shared[1]["file"]);
     let id = items[0]["id"].as_str().unwrap().to_string();
+    assert!(id.starts_with("doc-"));
 
+    // Document.id is the export's DocumentReference.id.
+    let sam = member_id(&dir, "Sam");
+    let stream = uhc(&dir)
+        .args(["records", "export", "--patient", &sam, "--ndjson"])
+        .assert()
+        .success();
+    let text = String::from_utf8(stream.get_output().stdout.clone()).unwrap();
+    assert!(text
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .any(|r| r["resourceType"] == "DocumentReference" && r["id"] == id.as_str()));
+
+    // By a prefix of the id, or of the statement id claims list shows.
+    let statement = id.trim_start_matches("doc-").split('-').next().unwrap().to_string();
+    let out = tmp("dl-statement");
+    let by_statement = json_of(
+        uhc(&dir)
+            .args(["documents", "download", &statement[..8], "-o"])
+            .arg(&out),
+    );
+    assert_eq!(by_statement["id"], id.as_str());
     let out = tmp("dl");
-    let saved = json_of(uhc(&dir).args(["documents", "download", &id[..8], "-o"]).arg(&out));
+    let saved = json_of(uhc(&dir).args(["documents", "download", &id[..12], "-o"]).arg(&out));
     assert_eq!(saved["schema"], "document-download/v1");
     let path = PathBuf::from(saved["path"].as_str().unwrap());
     assert_eq!(path.file_name().unwrap(), "2026-05-08-statement.pdf");
@@ -382,18 +425,20 @@ fn documents_list_and_download() {
     let all = tmp("all");
     let batch = json_of(uhc(&dir).args(["documents", "download", "--all", "-o"]).arg(&all));
     assert_eq!(batch["schema"], "document-download-batch/v1");
-    assert_eq!(batch["count"], 3);
+    // Four documents, three files: both rows of 03/14 name the one file.
+    assert_eq!(batch["count"], 4);
+    assert_eq!(std::fs::read_dir(&all).unwrap().count(), 3);
     // A re-run skips what is already saved. A file of the same name holding
     // something else is left alone and the statement saved beside it.
     let again = json_of(uhc(&dir).args(["documents", "download", "--all", "-o"]).arg(&all));
     assert_eq!(again["count"], 0);
-    assert_eq!(again["skipped"].as_array().unwrap().len(), 3);
+    assert_eq!(again["skipped"].as_array().unwrap().len(), 4);
     assert_eq!(again["skipped"][0]["code"], "exists");
     let kept = all.join("2026-05-08-statement.pdf");
     std::fs::write(&kept, b"%PDF-1.4 edited by hand").unwrap();
     let again = json_of(uhc(&dir).args(["documents", "download", "--all", "-o"]).arg(&all));
     assert_eq!(again["count"], 1);
-    assert_eq!(again["skipped"].as_array().unwrap().len(), 2);
+    assert_eq!(again["skipped"].as_array().unwrap().len(), 3);
     let beside = PathBuf::from(again["items"][0]["path"].as_str().unwrap());
     assert!(beside
         .file_name()
@@ -407,7 +452,7 @@ fn documents_list_and_download() {
             .args(["documents", "download", "--all", "--overwrite", "-o"])
             .arg(&all),
     );
-    assert_eq!(replaced["count"], 3);
+    assert_eq!(replaced["count"], 4);
     assert_eq!(
         std::fs::read(&kept).unwrap(),
         std::fs::read(dir.join("2026-05-08-statement.pdf")).unwrap()
@@ -582,7 +627,7 @@ fn an_export_file_is_private_and_replaced_safely() {
     let alex = member_id(&dir, "Alex");
     let out = tmp("private");
     let path = out.join("records.ndjson");
-    // A world-readable file, and then a link, where the export goes.
+    // A world-readable file where the export goes is replaced, private.
     std::fs::write(&path, "old").unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     uhc(&dir)
@@ -595,13 +640,14 @@ fn an_export_file_is_private_and_replaced_safely() {
     std::fs::write(&elsewhere, "untouched").unwrap();
     std::fs::remove_file(&path).unwrap();
     std::os::unix::fs::symlink(&elsewhere, &path).unwrap();
+    // A link there is refused, never followed.
     uhc(&dir)
         .args(["records", "export", "--patient", &alex, "-o"])
         .arg(&out)
         .assert()
-        .success();
+        .code(2);
     assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "untouched");
-    assert!(!std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+    assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
 }
 
 #[test]
@@ -722,4 +768,33 @@ fn processing_notes_and_network_status_use_valid_codes() {
     let status = &eob["adjudication"][0];
     assert_eq!(status["category"]["coding"][0]["code"], "benefitpaymentstatus");
     assert_eq!(status["reason"]["coding"][0]["code"], "outofnetwork");
+}
+
+#[test]
+fn every_document_id_is_a_document_reference_some_export_writes() {
+    need_pdftotext!();
+    let mut fixtures = GOOD.to_vec();
+    fixtures.push("damaged-statement.txt");
+    let dir = statements(&fixtures);
+    let docs = json_of(uhc(&dir).args(["documents", "list"]));
+    let patients = json_of(uhc(&dir).args(["patients", "list"]));
+    let mut written = std::collections::HashSet::new();
+    for p in patients["items"].as_array().unwrap() {
+        let out = uhc(&dir)
+            .args(["records", "export", "--patient", p["id"].as_str().unwrap(), "--ndjson"])
+            .assert()
+            .success();
+        for line in String::from_utf8(out.get_output().stdout.clone()).unwrap().lines() {
+            let r: Value = serde_json::from_str(line).unwrap();
+            if r["resourceType"] == "DocumentReference" {
+                written.insert(r["id"].as_str().unwrap().to_string());
+            }
+        }
+    }
+    for d in docs["items"].as_array().unwrap() {
+        let id = d["id"].as_str().unwrap();
+        if id.starts_with("doc-") {
+            assert!(written.contains(id), "{id} is listed but never exported");
+        }
+    }
 }

@@ -39,7 +39,9 @@ uhc documents download --all -o ~/Archive/UHC   # re-runs save only new statemen
 uhc records export --patient <id> --ndjson | medrec import --from uhc
 ```
 
-Every command takes `--json` and prints one schema-tagged document.
+Every command takes `--json` and prints one schema-tagged document, except
+`records export --ndjson`, whose NDJSON stream is the output (`--json` with
+it is a usage error, exit 2).
 
 | Command | Output schema |
 | --- | --- |
@@ -71,8 +73,16 @@ amount, processing codes as notes, the plan balances the statement printed as
 `benefitBalance`), and each statement PDF as `DocumentReference` + `Binary`.
 `docs/fhir.md` has the mapping.
 
-`-o DIR` writes the stream to a file instead, for synthetic statements only;
-real records go straight into medrec.
+`-o DIR` writes the stream to `DIR/records.ndjson` instead (mode 0600,
+replaced by a rename; a symbolic link there is refused) and prints
+`records-export/v1`. It is for folders of synthetic statements only; real
+records go straight into medrec.
+
+The stream, `patients list` and the `documents/v1` rows are medical-common's
+`health-records/v1` shapes (`pk-med-records`). A `documents list` id is the
+export's `DocumentReference` id: a statement carrying two members' claims
+is listed once for each, both rows naming the one file. `documents download`
+also takes a prefix of the statement id that `claims list` shows.
 
 ## Try it on synthetic data
 

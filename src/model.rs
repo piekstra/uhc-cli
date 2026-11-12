@@ -340,6 +340,24 @@ impl Book {
         out
     }
 
+    /// For each statement, the members whose export writes a
+    /// `DocumentReference` for it, as (member id, label), in claim order: a
+    /// statement is in a member's export when one of their claims (merged,
+    /// latest version wins) lists it among its documents. A statement no
+    /// export carries (one printing only balances) has no entry.
+    pub fn document_members(&self) -> std::collections::HashMap<String, Vec<(String, String)>> {
+        let mut out: std::collections::HashMap<String, Vec<(String, String)>> = Default::default();
+        for c in self.claims() {
+            for doc in &c.documents {
+                let members = out.entry(doc.clone()).or_default();
+                if !members.iter().any(|(id, _)| *id == c.patient) {
+                    members.push((c.patient.clone(), c.label.clone()));
+                }
+            }
+        }
+        out
+    }
+
     /// The full name a statement addressed to this member prints.
     pub fn full_name(&self, patient: &str) -> Option<String> {
         self.files.iter().rev().find_map(|f| {
