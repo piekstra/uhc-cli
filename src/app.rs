@@ -809,15 +809,17 @@ fn document_of(f: &StatementFile, id: String, label: Option<&str>) -> Document {
     d
 }
 
+/// Each statement's members, as `Book::document_members` gives them.
+type DocumentMembers = std::collections::HashMap<String, Vec<(String, String)>>;
+
 /// A statement's `documents/v1` rows: one per `DocumentReference` the export
-/// writes for it (a statement is a document of each member with a claim on
-/// it), so `Document.id` is the `DocumentReference.id`. A statement with no
-/// member to name is listed under its own id.
-fn documents_of(book: &Book, f: &StatementFile) -> Vec<Document> {
-    let members = book.document_members(f);
-    if members.is_empty() {
+/// writes for it, so `Document.id` is the `DocumentReference.id`. A
+/// statement no export carries is listed once under its statement id, so no
+/// row names a `DocumentReference` that is never written.
+fn documents_of(members: &DocumentMembers, f: &StatementFile) -> Vec<Document> {
+    let Some(members) = members.get(&f.id).filter(|m| !m.is_empty()) else {
         return vec![document_of(f, f.id.clone(), None)];
-    }
+    };
     members
         .iter()
         .map(|(id, label)| document_of(f, fhir::document_id(&f.id, id), Some(label)))
@@ -827,13 +829,14 @@ fn documents_of(book: &Book, f: &StatementFile) -> Vec<Document> {
 fn documents_list(ctx: &Ctx, range: &RangeArgs) -> Result<(), CliError> {
     let window = Window::of(range)?;
     let scan = ctx.scan()?;
+    let members = scan.book.document_members();
     let docs: Vec<Document> = scan
         .book
         .files
         .iter()
         .rev()
         .filter(|f| window.contains(f.statement.statement_date.as_deref()))
-        .flat_map(|f| documents_of(&scan.book, f))
+        .flat_map(|f| documents_of(&members, f))
         .take(range.limit.map(|n| n as usize).unwrap_or(usize::MAX))
         .collect();
     if !ctx.json() && docs.is_empty() {
@@ -851,9 +854,10 @@ fn find_document<'a>(book: &'a Book, q: &str) -> Result<(&'a StatementFile, Docu
     if q.len() < 6 {
         return Err(CliError::Usage("give at least 6 characters of the document id".into()));
     }
+    let members = book.document_members();
     let mut hits: Vec<(&StatementFile, Document)> = Vec::new();
     for f in &book.files {
-        let docs = documents_of(book, f);
+        let docs = documents_of(&members, f);
         if let Some(d) = docs.iter().find(|d| d.id == q) {
             return Ok((f, d.clone()));
         }
@@ -940,6 +944,7 @@ fn documents_download(ctx: &Ctx, args: &DownloadArgs) -> Result<(), CliError> {
         let mut saved = Vec::new();
         let mut skipped = Vec::new();
         let mut files_written = 0usize;
+        let members = scan.book.document_members();
         // Names taken in this batch, case-folded: APFS and NTFS ignore case.
         let mut used = std::collections::HashSet::new();
         for f in &scan.book.files {
@@ -973,7 +978,7 @@ fn documents_download(ctx: &Ctx, args: &DownloadArgs) -> Result<(), CliError> {
                 files_written += 1;
             }
             // Every row of the statement shares its one file.
-            for doc in documents_of(&scan.book, f) {
+            for doc in documents_of(&members, f) {
                 match &outcome {
                     Some(Ok(path)) => saved.push(SavedDocument::from_document(
                         &doc,

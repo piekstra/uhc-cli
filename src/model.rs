@@ -340,33 +340,25 @@ impl Book {
         out
     }
 
-    /// The full name a statement addressed to this member prints.
-    /// The members a statement is a document of, as (member id, label): those
-    /// with a claim on it, in the order printed, else the member it is
-    /// addressed to. Each is one `DocumentReference` in the export.
-    pub fn document_members(&self, f: &StatementFile) -> Vec<(String, String)> {
-        let mid = Self::member_id(f);
-        let mut out: Vec<(String, String)> = Vec::new();
-        for c in &f.statement.claims {
-            let id = patient_id(&mid, &c.patient);
-            if !out.iter().any(|(i, _)| *i == id) {
-                out.push((id, title(&c.patient)));
-            }
-        }
-        if out.is_empty() {
-            if let Some(first) = f
-                .statement
-                .member
-                .name
-                .as_deref()
-                .and_then(|n| n.split_whitespace().next())
-            {
-                out.push((patient_id(&mid, first), title(first)));
+    /// For each statement, the members whose export writes a
+    /// `DocumentReference` for it, as (member id, label), in claim order: a
+    /// statement is in a member's export when one of their claims (merged,
+    /// latest version wins) lists it among its documents. A statement no
+    /// export carries (one printing only balances) has no entry.
+    pub fn document_members(&self) -> std::collections::HashMap<String, Vec<(String, String)>> {
+        let mut out: std::collections::HashMap<String, Vec<(String, String)>> = Default::default();
+        for c in self.claims() {
+            for doc in &c.documents {
+                let members = out.entry(doc.clone()).or_default();
+                if !members.iter().any(|(id, _)| *id == c.patient) {
+                    members.push((c.patient.clone(), c.label.clone()));
+                }
             }
         }
         out
     }
 
+    /// The full name a statement addressed to this member prints.
     pub fn full_name(&self, patient: &str) -> Option<String> {
         self.files.iter().rev().find_map(|f| {
             let name = f.statement.member.name.as_deref()?;

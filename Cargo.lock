@@ -2443,7 +2443,6 @@ dependencies = [
  "pk-cli-core",
  "pk-cli-documents",
  "pk-cli-selfupdate",
- "pk-med-fhir",
  "pk-med-records",
  "predicates",
  "serde",

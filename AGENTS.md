@@ -6,7 +6,10 @@ PDFs the member downloads from myuhc.com and emits FHIR for the household's
 medical-records system (`records-stream/v1`, `medrec import --from uhc`).
 It conforms to piekstra-cli/1 and the `health-records/v1` and
 `documents/v1` profiles, on the `pk-cli-*` crates from
-[cli-common](https://github.com/piekstra/cli-common).
+[cli-common](https://github.com/piekstra/cli-common) and `pk-med-records`
+from [medical-common](https://github.com/piekstra/medical-common), which
+owns the records stream, the export file and the profile's DTOs. Every
+`pk-cli-*` stays on the cli-common tag medical-common pins.
 
 ## Layout
 
@@ -37,6 +40,8 @@ These come from the household's plan and are not negotiable.
 - `records export -o DIR` refuses statements without the synthetic marker;
   real records go straight into medrec through a pipe.
 - No FHIR, SMART or PDF libraries, no aggregators, no cloud OCR or AI.
+  The household's own crates (cli-common, medical-common) are not third
+  party; the FHIR here is mapped by hand in `src/fhir.rs`.
   `pdftotext` is a local subprocess; general-purpose crates are fine.
 - Read-only. Nothing writes to UHC. A write would need SPEC §1.3's
   confirmation gate and a change to this paragraph in the same commit.

@@ -39,7 +39,9 @@ uhc documents download --all -o ~/Archive/UHC   # re-runs save only new statemen
 uhc records export --patient <id> --ndjson | medrec import --from uhc
 ```
 
-Every command takes `--json` and prints one schema-tagged document.
+Every command takes `--json` and prints one schema-tagged document, except
+`records export --ndjson`, whose NDJSON stream is the output (`--json` with
+it is a usage error, exit 2).
 
 | Command | Output schema |
 | --- | --- |

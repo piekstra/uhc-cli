@@ -769,3 +769,32 @@ fn processing_notes_and_network_status_use_valid_codes() {
     assert_eq!(status["category"]["coding"][0]["code"], "benefitpaymentstatus");
     assert_eq!(status["reason"]["coding"][0]["code"], "outofnetwork");
 }
+
+#[test]
+fn every_document_id_is_a_document_reference_some_export_writes() {
+    need_pdftotext!();
+    let mut fixtures = GOOD.to_vec();
+    fixtures.push("damaged-statement.txt");
+    let dir = statements(&fixtures);
+    let docs = json_of(uhc(&dir).args(["documents", "list"]));
+    let patients = json_of(uhc(&dir).args(["patients", "list"]));
+    let mut written = std::collections::HashSet::new();
+    for p in patients["items"].as_array().unwrap() {
+        let out = uhc(&dir)
+            .args(["records", "export", "--patient", p["id"].as_str().unwrap(), "--ndjson"])
+            .assert()
+            .success();
+        for line in String::from_utf8(out.get_output().stdout.clone()).unwrap().lines() {
+            let r: Value = serde_json::from_str(line).unwrap();
+            if r["resourceType"] == "DocumentReference" {
+                written.insert(r["id"].as_str().unwrap().to_string());
+            }
+        }
+    }
+    for d in docs["items"].as_array().unwrap() {
+        let id = d["id"].as_str().unwrap();
+        if id.starts_with("doc-") {
+            assert!(written.contains(id), "{id} is listed but never exported");
+        }
+    }
+}
