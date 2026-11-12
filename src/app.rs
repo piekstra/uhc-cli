@@ -880,17 +880,22 @@ fn documents_download(ctx: &Ctx, args: &DownloadArgs) -> Result<(), CliError> {
                 ),
             }
         }
-        let kept = skipped.len();
+        let count = |code: &str| skipped.iter().filter(|k| k.code.as_deref() == Some(code)).count();
+        let (kept, taken) = (count("exists"), count("name_taken"));
         let batch = DownloadBatch::new(dir.display().to_string(), saved).with_skipped(skipped);
         if ctx.json() {
             output::json(&serde_json::to_value(&batch).unwrap_or_default());
         } else {
-            let already = if kept > 0 {
-                format!("; {kept} already there")
-            } else {
-                String::new()
-            };
-            ctx.note(&format!("saved {} statement(s) to {}{already}", batch.count, batch.dir));
+            let mut note = format!("saved {} statement(s) to {}", batch.count, batch.dir);
+            if kept > 0 {
+                note.push_str(&format!("; {kept} already there"));
+            }
+            if taken > 0 {
+                note.push_str(&format!(
+                    "; {taken} not saved, other files hold their names (--overwrite)"
+                ));
+            }
+            ctx.note(&note);
         }
         return Ok(());
     }

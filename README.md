@@ -56,9 +56,12 @@ Exit codes: 0 ok, 1 other (pdftotext missing), 2 usage, 4 not found,
 5 the statements could not be read (layout changed).
 
 `documents download` never replaces a file without `--overwrite`. For one
-document an existing file is a usage error (exit 2). With `--all`, files
-already there are left alone and listed in `skipped[]` with code `exists`,
-so re-running it into an archive folder saves only the new statements.
+document an existing file is a usage error (exit 2). With `--all`, a
+statement already saved there (same bytes) is listed in `skipped[]` with
+code `exists`, so re-running it into an archive folder saves only the new
+statements. A different file holding its name leaves the statement saved
+beside it as `<id>_<name>`; when that name is taken too, it is listed with
+code `name_taken`. `--overwrite` replaces both.
 
 ### What the export carries
 
