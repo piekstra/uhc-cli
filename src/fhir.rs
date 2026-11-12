@@ -2,7 +2,7 @@
 //! `ExplanationOfBenefit` and `Coverage`, with `Patient`, the payer
 //! `Organization`, and each statement PDF as `DocumentReference` + `Binary`.
 //!
-//! The mapping follows CARIN BB 2.0's element choices and code systems where
+//! The mapping follows CARIN BB 2.0's (STU2) element choices and code systems where
 //! the statement carries the value. It does not claim the profiles
 //! (`meta.profile`): a statement does not print the claim type or the
 //! diagnoses CARIN requires. Every resource says where it came from in
@@ -26,7 +26,20 @@ pub const BENEFIT_TYPE_SYSTEM: &str = "https://github.com/piekstra/uhc-cli/fhir/
 const HL7_ADJUDICATION: &str = "http://terminology.hl7.org/CodeSystem/adjudication";
 const C4BB_ADJUDICATION: &str = "http://hl7.org/fhir/us/carin-bb/CodeSystem/C4BBAdjudication";
 const C4BB_SUPPORTING_INFO: &str = "http://hl7.org/fhir/us/carin-bb/CodeSystem/C4BBSupportingInfoType";
-const C4BB_CONTRACTING: &str = "http://hl7.org/fhir/us/carin-bb/CodeSystem/C4BBPayerProviderContractingStatus";
+const C4BB_DISCRIMINATOR: &str = "http://hl7.org/fhir/us/carin-bb/CodeSystem/C4BBAdjudicationDiscriminator";
+const C4BB_ADJUDICATION_STATUS: &str = "http://hl7.org/fhir/us/carin-bb/CodeSystem/C4BBPayerAdjudicationStatus";
+const DATA_ABSENT_REASON: &str = "http://hl7.org/fhir/StructureDefinition/data-absent-reason";
+
+/// A statement without a member ID gets a stand-in for grouping its claims
+/// (`model::Book::member_id`); it is never exported as UHC's identifier.
+fn printed_member_id(m: &Member) -> Option<&str> {
+    (!m.member_id.starts_with(crate::model::UNKNOWN_MEMBER_PREFIX)).then_some(m.member_id.as_str())
+}
+
+/// A required element the statement does not print.
+fn absent() -> Value {
+    json!({ "extension": [{ "url": DATA_ABSENT_REASON, "valueCode": "unknown" }] })
+}
 
 fn meta() -> Value {
     json!({
@@ -62,17 +75,20 @@ pub fn patient(m: &Member, full_name: Option<&str>) -> Value {
         name.insert("text".into(), full.into());
     }
     name.insert("given".into(), json!([m.label]));
-    json!({
+    let mut v = json!({
         "resourceType": "Patient",
         "id": m.id,
         "meta": meta(),
-        "identifier": [{
+    });
+    if let Some(id) = printed_member_id(m) {
+        v["identifier"] = json!([{
             "type": coding("http://terminology.hl7.org/CodeSystem/v2-0203", "MB"),
             "system": MEMBER_ID_SYSTEM,
-            "value": m.member_id,
-        }],
-        "name": [Value::Object(name)],
-    })
+            "value": id,
+        }]);
+    }
+    v["name"] = json!([Value::Object(name)]);
+    v
 }
 
 pub fn coverage_id(m: &Member) -> String {
@@ -90,7 +106,9 @@ pub fn coverage(m: &Member) -> Value {
     if m.group_number.is_some() {
         v["type"] = json!({ "text": "Group health plan" });
     }
-    v["subscriberId"] = m.member_id.clone().into();
+    if let Some(id) = printed_member_id(m) {
+        v["subscriberId"] = id.into();
+    }
     v["beneficiary"] = json!({ "reference": format!("Patient/{}", m.id) });
     if let Some(rel) = &m.relationship {
         v["relationship"] = coding("http://terminology.hl7.org/CodeSystem/subscriber-relationship", rel);
@@ -133,12 +151,14 @@ fn adjudication(a: &Amounts) -> Vec<Value> {
         .collect()
 }
 
-pub fn document_id(file_id: &str) -> String {
-    format!("doc-{file_id}")
+/// A statement as one member's document. A statement carrying two members'
+/// claims is a document of each, with its own subject, so the id names both.
+pub fn document_id(file_id: &str, patient: &str) -> String {
+    format!("doc-{file_id}-{patient}")
 }
 
-pub fn binary_id(file_id: &str) -> String {
-    format!("bin-{file_id}")
+pub fn binary_id(file_id: &str, patient: &str) -> String {
+    format!("bin-{file_id}-{patient}")
 }
 
 /// One claim. `balances` are the plan balances its statement printed for
@@ -169,31 +189,24 @@ pub fn explanation_of_benefit(c: &ClaimRecord, coverage: &str, balances: &[&Bala
         }
         v["billablePeriod"] = period;
     }
-    if let Some(created) = &c.statement_date {
-        v["created"] = created.clone().into();
+    // `created` and `provider` are required; a damaged statement may print
+    // neither, and FHIR says so with data-absent-reason.
+    match &c.statement_date {
+        Some(created) => v["created"] = created.clone().into(),
+        None => v["_created"] = absent(),
     }
     v["insurer"] = json!({ "reference": format!("Organization/{ORGANIZATION}"), "display": ORGANIZATION_NAME });
-    if let Some(p) = &c.claim.provider {
-        v["provider"] = json!({ "display": p });
-    }
+    v["provider"] = match &c.claim.provider {
+        Some(p) => json!({ "display": p }),
+        None => absent(),
+    };
     v["outcome"] = "complete".into();
 
     let mut info = vec![json!({
         "sequence": 1,
         "category": coding("http://terminology.hl7.org/CodeSystem/claiminformationcategory", "info"),
-        "valueReference": { "reference": format!("DocumentReference/{}", document_id(&c.document)) },
+        "valueReference": { "reference": format!("DocumentReference/{}", document_id(&c.document, &c.patient)) },
     })];
-    if let Some(network) = c.claim.network {
-        let status = match network {
-            Network::In => "contracted",
-            Network::Out => "non-contracted",
-        };
-        info.push(json!({
-            "sequence": info.len() + 1,
-            "category": coding(C4BB_SUPPORTING_INFO, "performingnetworkcontractingstatus"),
-            "code": coding(C4BB_CONTRACTING, status),
-        }));
-    }
     if let Some(acct) = &c.claim.account_number {
         info.push(json!({
             "sequence": info.len() + 1,
@@ -203,6 +216,18 @@ pub fn explanation_of_benefit(c: &ClaimRecord, coverage: &str, balances: &[&Bala
     }
     v["supportingInfo"] = Value::Array(info);
     v["insurance"] = json!([{ "focal": true, "coverage": { "reference": format!("Coverage/{coverage}") } }]);
+    // CARIN BB STU2: the claim's network status is the header-level
+    // `benefitpaymentstatus` adjudication.
+    if let Some(network) = c.claim.network {
+        let (code, display) = match network {
+            Network::In => ("innetwork", "In Network"),
+            Network::Out => ("outofnetwork", "Out Of Network"),
+        };
+        v["adjudication"] = json!([{
+            "category": { "coding": [{ "system": C4BB_DISCRIMINATOR, "code": "benefitpaymentstatus", "display": "Benefit Payment Status" }] },
+            "reason": { "coding": [{ "system": C4BB_ADJUDICATION_STATUS, "code": code, "display": display }] },
+        }]);
+    }
 
     let notes: Vec<&String> = c.codes.keys().collect();
     let items: Vec<Value> = c
@@ -239,7 +264,7 @@ pub fn explanation_of_benefit(c: &ClaimRecord, coverage: &str, balances: &[&Bala
             c.codes
                 .iter()
                 .enumerate()
-                .map(|(n, (code, text))| json!({ "number": n + 1, "type": "printed", "text": format!("{code} -- {text}") }))
+                .map(|(n, (code, text))| json!({ "number": n + 1, "type": "print", "text": format!("{code} -- {text}") }))
                 .collect(),
         );
     }
@@ -285,7 +310,7 @@ pub fn document_reference(f: &StatementFile, patient: &str, claims: &[&ClaimReco
     let st = &f.statement;
     let mut v = json!({
         "resourceType": "DocumentReference",
-        "id": document_id(&f.id),
+        "id": document_id(&f.id, patient),
         "meta": meta(),
         "status": "current",
         "type": { "text": "Explanation of Benefits" },
@@ -302,7 +327,7 @@ pub fn document_reference(f: &StatementFile, patient: &str, claims: &[&ClaimReco
     .into();
     let mut attachment = json!({
         "contentType": "application/pdf",
-        "url": format!("Binary/{}", binary_id(&f.id)),
+        "url": format!("Binary/{}", binary_id(&f.id, patient)),
         "size": f.bytes,
         "title": match &st.statement_date {
             Some(d) => format!("UHC EOB {d}.pdf"),
@@ -323,10 +348,10 @@ pub fn document_reference(f: &StatementFile, patient: &str, claims: &[&ClaimReco
     v
 }
 
-pub fn binary(f: &StatementFile, content: &[u8]) -> Value {
+pub fn binary(f: &StatementFile, patient: &str, content: &[u8]) -> Value {
     json!({
         "resourceType": "Binary",
-        "id": binary_id(&f.id),
+        "id": binary_id(&f.id, patient),
         "meta": meta(),
         "contentType": "application/pdf",
         "data": base64::engine::general_purpose::STANDARD.encode(content),

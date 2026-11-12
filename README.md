@@ -34,6 +34,7 @@ uhc claims get <claim number>
 uhc accumulators --year 2026     # deductible and out-of-pocket progress
 uhc documents list
 uhc documents download <id> -o ~/Desktop
+uhc documents download --all -o ~/Archive/UHC   # re-runs save only new statements
 
 uhc records export --patient <id> --ndjson | medrec import --from uhc
 ```
@@ -53,6 +54,11 @@ Every command takes `--json` and prints one schema-tagged document.
 
 Exit codes: 0 ok, 1 other (pdftotext missing), 2 usage, 4 not found,
 5 the statements could not be read (layout changed).
+
+`documents download` never replaces a file without `--overwrite`. For one
+document an existing file is a usage error (exit 2). With `--all`, files
+already there are left alone and listed in `skipped[]` with code `exists`,
+so re-running it into an archive folder saves only the new statements.
 
 ### What the export carries
 

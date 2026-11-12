@@ -62,9 +62,10 @@ smoke: build
 		"documents list" "documents download" "import check"; do \
 		./target/debug/$(BIN) $$c --help >/dev/null || exit 1; done
 	@if command -v pdftotext >/dev/null; then \
-		rm -rf target/smoke && $(CARGO) run -q --example synth-eob -- target/smoke >/dev/null && \
+		want=$$(ls tests/fixtures/eob/*-statement.txt | wc -l | tr -d ' '); \
+		$(CARGO) run -q --example synth-eob -- target/smoke >/dev/null && \
 		XDG_CONFIG_HOME=target/smoke-config ./target/debug/$(BIN) --dir target/smoke import check --json \
-			| grep -q '"statements": 4' || { echo "smoke: the synthetic statements did not read"; exit 1; }; \
+			| grep -q "\"statements\": $$want," || { echo "smoke: the $$want synthetic statements did not read"; exit 1; }; \
 	else echo "smoke: pdftotext not installed; skipped the statement round trip"; fi
 	@echo "smoke ok"
 

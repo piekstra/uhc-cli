@@ -23,3 +23,6 @@ Dummy shapes, enforced by `tests/no_personal_data.rs`:
 | People | `ALEX`, `SAM`, `JORDAN`, surname `EXAMPLE` |
 | Providers, employer | `EXAMPLE …`, `SAMPLE …`, `TEST …` |
 | Phone numbers | `555-01xx` |
+
+A file whose name ends in `-statement.txt` is a statement (`make smoke`
+counts them); any other file here is a PDF that is not one.

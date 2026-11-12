@@ -252,6 +252,18 @@ pub fn parse(text: &str) -> Statement {
         synthetic: text.contains(SYNTHETIC_MARKER),
         ..Statement::default()
     };
+    // Byte offsets below assume one-byte spaces: any other whitespace
+    // (U+00A0, U+1680, U+2000…) becomes an ASCII space first.
+    let text: String = text
+        .chars()
+        .map(|c| {
+            if c.is_whitespace() && !matches!(c, '\n' | '\x0c') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
     let lines: Vec<&str> = text.split(['\n', '\x0c']).collect();
     let mut section = Section::Header;
     let mut as_of: Option<String> = None;
@@ -261,6 +273,12 @@ pub fn parse(text: &str) -> Statement {
     let mut pending_date: Option<usize> = None; // index into the current claim's lines
     let mut row_network: Option<Network> = None;
     let mut claim_margin = 0usize;
+    // A repeated "Claim detail for" header of a claim with no total yet: the
+    // claim goes on (a page break) unless the block names another claim.
+    let mut continuing = false;
+    // Plain text since the last service line: a description printed above
+    // its amounts, or wrapped onto further lines.
+    let mut pending_text: Vec<String> = Vec::new();
 
     for (i, raw) in lines.iter().enumerate() {
         let line = raw.trim_end();
@@ -346,13 +364,21 @@ pub fn parse(text: &str) -> Statement {
             continue;
         }
         if let Some(who) = field(line, "Claim detail for") {
-            st.claims.push(Claim {
-                patient: first_word(&who),
-                ..Claim::default()
-            });
+            let patient = first_word(&who);
+            continuing = st
+                .claims
+                .last()
+                .is_some_and(|c| c.total.is_none() && !c.lines.is_empty() && c.patient.eq_ignore_ascii_case(&patient));
+            if !continuing {
+                st.claims.push(Claim {
+                    patient,
+                    ..Claim::default()
+                });
+                pending_date = None;
+            }
             claim_margin = line.len() - line.trim_start().len();
             section = Section::Claim;
-            pending_date = None;
+            pending_text.clear();
             continue;
         }
         if trimmed.starts_with("Definitions of Key Terms") || trimmed.starts_with("Explanation of your claim") {
@@ -389,15 +415,31 @@ pub fn parse(text: &str) -> Statement {
                 }
             }
             Section::Claim => {
+                let provider = field(line, "Provider:");
+                let number = field(line, "Claim number:").map(|v| first_word(&v));
+                if continuing {
+                    // A continued block that names a different claim is that claim.
+                    let last = st.claims.last().expect("a claim section has a claim");
+                    let differs = |new: &Option<String>, old: &Option<String>| matches!((new, old), (Some(n), Some(o)) if !n.eq_ignore_ascii_case(o));
+                    if differs(&number, &last.claim_number) || differs(&provider, &last.provider) {
+                        let patient = last.patient.clone();
+                        st.claims.push(Claim {
+                            patient,
+                            ..Claim::default()
+                        });
+                        pending_date = None;
+                        continuing = false;
+                    }
+                }
                 let claim = st.claims.last_mut().expect("a claim section has a claim");
                 if claim.provider.is_none() {
-                    claim.provider = field(line, "Provider:");
+                    claim.provider = provider;
                 }
                 if claim.account_number.is_none() {
                     claim.account_number = field(line, "Patient account number:").map(|v| first_word(&v));
                 }
                 if claim.claim_number.is_none() {
-                    claim.claim_number = field(line, "Claim number:").map(|v| first_word(&v));
+                    claim.claim_number = number;
                 }
                 if claim.network.is_none() {
                     if let Some(s) = field(line, "Status:") {
@@ -413,11 +455,24 @@ pub fn parse(text: &str) -> Statement {
                 }
                 let amounts = money_tokens(line);
                 if amounts.is_empty() {
+                    if is_description_text(trimmed) {
+                        pending_text.push(trimmed.split_whitespace().collect::<Vec<_>>().join(" "));
+                    } else {
+                        pending_text.clear();
+                    }
                     continue;
                 }
+                continuing = false;
                 let values: Vec<Cents> = amounts.iter().map(|(_, c)| *c).collect();
                 let prefix = &line[..amounts[0].0];
                 if prefix.trim_start().starts_with("Total amount") {
+                    // Text after the last line's amounts is the rest of its description.
+                    if let Some(last) = claim.lines.last_mut() {
+                        for t in pending_text.drain(..) {
+                            last.description = format!("{} {t}", last.description).trim().to_string();
+                        }
+                    }
+                    pending_text.clear();
                     match Amounts::from_slice(&values) {
                         Some(a) => claim.total = Some(a),
                         None => st.issues.push(Issue::AmountsUnreadable),
@@ -425,13 +480,16 @@ pub fn parse(text: &str) -> Statement {
                     continue;
                 }
                 let Some(a) = Amounts::from_slice(&values) else {
+                    pending_text.clear();
                     st.issues.push(Issue::AmountsUnreadable);
                     continue;
                 };
-                let (mut description, codes) = describe(prefix, claim_margin);
-                if description.is_empty() {
-                    description = previous_text(&lines[..i]).unwrap_or_default();
+                let (inline, codes) = describe(prefix, claim_margin);
+                let mut parts: Vec<String> = std::mem::take(&mut pending_text);
+                if !inline.is_empty() {
+                    parts.push(inline);
                 }
+                let description = parts.join(" ");
                 let (description, date, date_end) = take_inline_date(&description);
                 claim.lines.push(ClaimLine {
                     description,
@@ -609,15 +667,25 @@ fn money_after(line: &str, label: &str) -> Option<Cents> {
 fn money_tokens(line: &str) -> Vec<(usize, Cents)> {
     let mut out = Vec::new();
     let mut start = None;
+    // A lone `-` before an amount (`- $85.00`) is its sign.
+    let mut minus: Option<usize> = None;
     for (i, ch) in line.char_indices().chain(std::iter::once((line.len(), ' '))) {
         match (ch.is_whitespace(), start) {
             (false, None) => start = Some(i),
             (true, Some(s)) => {
                 let tok = &line[s..i];
-                if tok.contains('$') {
-                    if let Some(c) = Cents::parse(tok) {
-                        out.push((s, c));
+                if tok == "-" {
+                    minus = Some(s);
+                } else {
+                    if tok.contains('$') {
+                        if let Some(c) = Cents::parse(tok) {
+                            match minus {
+                                Some(m) => out.push((m, Cents(-c.0))),
+                                None => out.push((s, c)),
+                            }
+                        }
                     }
+                    minus = None;
                 }
                 start = None;
             }
@@ -656,7 +724,11 @@ fn processing_codes(line: &str) -> Vec<(String, String)> {
     let mut search = 0;
     while let Some(rel) = line[search..].find(" -- ") {
         let at = search + rel;
-        let code_start = line[..at].rfind(char::is_whitespace).map(|p| p + 1).unwrap_or(0);
+        let code_start = line[..at]
+            .char_indices()
+            .rfind(|(_, c)| c.is_whitespace())
+            .map(|(p, c)| p + c.len_utf8())
+            .unwrap_or(0);
         let code = &line[code_start..at];
         let gap_before = code_start == 0 || line[..code_start].ends_with("  ") || line[..code_start].trim().is_empty();
         let text_start = at + " -- ".len();
@@ -719,17 +791,33 @@ fn take_inline_date(description: &str) -> (String, Option<String>, Option<String
     (words.join(" "), None, None)
 }
 
-/// The nearest earlier line of plain text (a description printed above its
-/// amounts).
-fn previous_text(before: &[&str]) -> Option<String> {
-    before
-        .iter()
-        .rev()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .take(3)
-        .find(|l| money_tokens(l).is_empty() && mdy(l).is_none() && !l.contains(':'))
-        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+/// Whether a line in a claim block without amounts is description text:
+/// not a labelled field, a page footer's form code, or a row of column
+/// headings.
+fn is_description_text(t: &str) -> bool {
+    if t.contains(':') || t == "STD-EOB" || mdy(t).is_some() {
+        return false;
+    }
+    // The footer's form code, e.g. `000000000000000-A-S-PS-E`.
+    if !t.contains(' ') && t.len() >= 15 && t.starts_with(|c: char| c.is_ascii_digit()) {
+        return false;
+    }
+    let lower = t.to_ascii_lowercase();
+    const HEADINGS: [&str; 12] = [
+        "amount billed",
+        "your plan discount",
+        "amount allowed",
+        "plan paid",
+        "deductible",
+        "copay",
+        "coinsurance",
+        "not covered",
+        "you owe",
+        "date of service",
+        "description",
+        "processing code",
+    ];
+    HEADINGS.iter().filter(|h| lower.contains(*h)).count() < 2
 }
 
 #[cfg(test)]

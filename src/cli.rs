@@ -112,8 +112,9 @@ pub enum RecordsCmd {
 pub struct ExportArgs {
     #[command(flatten)]
     pub who: PatientArg,
-    /// Only claims whose service began on or after this day, and statements
-    /// dated on or after it (YYYY-MM-DD).
+    /// Only what changed since this day (YYYY-MM-DD): claims whose latest
+    /// statement is dated on or after it, and the statements dated on or
+    /// after it.
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub since: Option<String>,
     /// Write the stream to stdout (`| medrec import --from uhc`).

@@ -7,7 +7,7 @@ use clap::CommandFactory;
 use pk_cli_auth::AuthStatus;
 use pk_cli_config::ConfigStore;
 use pk_cli_core::info::{AuthInfo, CliInfo};
-use pk_cli_core::{dates, output, resolve, CliError, Paged, RangeArgs};
+use pk_cli_core::{dates, output, CliError, Paged, RangeArgs};
 use pk_cli_documents::{fs_safe, verify_pdf, Document, DownloadBatch, SavedDocument, SkippedDocument};
 use pk_cli_selfupdate::Updater;
 use serde::{Deserialize, Serialize};
@@ -113,6 +113,14 @@ fn expand(p: &Path) -> PathBuf {
 }
 
 pub fn main() {
+    // A reader that closes the pipe early (`uhc claims list | head`) ends the
+    // process quietly, as it does any Unix tool, instead of a panic in println!.
+    #[cfg(unix)]
+    // SAFETY: called first, before any thread starts; it only resets the
+    // disposition Rust's runtime set for SIGPIPE back to the default.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = <Cli as clap::Parser>::parse();
     if let Err(e) = run(&cli) {
         std::process::exit(output::fail(&e, cli.common.json));
@@ -252,13 +260,33 @@ fn config(ctx: &Ctx, cmd: &ConfigCmd) -> Result<(), CliError> {
 
 // -------------------------------------------------------------- patients
 
+/// A member by id, or by first name when only one member has it. The
+/// errors name ids only, never another member's name.
 fn find_member<'a>(members: &'a [Member], q: &str) -> Result<&'a Member, CliError> {
     if members.is_empty() {
         return Err(CliError::NotFound(
             "no member: the import folder holds no UnitedHealthcare EOB statement (`uhc import check`)".into(),
         ));
     }
-    resolve::pick(members, q, |m| vec![m.id.clone()], |m| &m.label, "member")
+    let q = q.trim();
+    if q.is_empty() {
+        return Err(CliError::Usage("the member reference is empty".into()));
+    }
+    if let Some(m) = members.iter().find(|m| m.id == q) {
+        return Ok(m);
+    }
+    let hits: Vec<&Member> = members.iter().filter(|m| m.label.eq_ignore_ascii_case(q)).collect();
+    match hits.as_slice() {
+        [one] => Ok(one),
+        [] => Err(CliError::NotFound(format!(
+            "no member matching `{q}` (`{BIN} patients list`)"
+        ))),
+        many => Err(CliError::NotFound(format!(
+            "`{q}` names {} members ({}); give one id from `{BIN} patients list`",
+            many.len(),
+            many.iter().map(|m| m.id.as_str()).collect::<Vec<_>>().join(", ")
+        ))),
+    }
 }
 
 fn patients(ctx: &Ctx) -> Result<(), CliError> {
@@ -322,48 +350,76 @@ fn header(m: &Member, since: Option<&str>) -> Header {
     }
 }
 
-/// Every resource of one member's export, in stream order.
-pub fn member_resources(book: &Book, m: &Member, since: Option<&str>) -> Result<Vec<Value>, CliError> {
-    let coverage = fhir::coverage_id(m);
+/// A `YYYY-MM-DD` date, zero-padded, so it compares as a string.
+fn iso(d: &str) -> Result<String, CliError> {
+    Ok(dates::fmt_iso(dates::parse_iso(d.trim())?))
+}
+
+/// What one member's export carries: the member's claims (with `since`,
+/// those on a statement dated that day or later: what changed since) and
+/// every statement that carried one of them (with `since`, those dated
+/// that day or later).
+pub struct Selection<'a> {
+    pub claims: Vec<ClaimRecord>,
+    pub files: Vec<(&'a StatementFile, Vec<usize>)>,
+}
+
+pub fn select<'a>(book: &'a Book, m: &Member, since: Option<&str>) -> Selection<'a> {
+    let on_or_after = |d: Option<&str>| match since {
+        Some(s) => d.is_none_or(|d| d >= s),
+        None => true,
+    };
     let claims: Vec<ClaimRecord> = book
         .claims()
         .into_iter()
         .filter(|c| c.patient == m.id)
         .filter(|c| match since {
             Some(s) => c
-                .service_start
+                .statement_date
                 .as_deref()
-                .or(c.statement_date.as_deref())
+                .or(c.service_start.as_deref())
                 .is_some_and(|d| d >= s),
             None => true,
         })
         .collect();
+    let files = book
+        .files
+        .iter()
+        .filter(|f| on_or_after(f.statement.statement_date.as_deref()))
+        .filter_map(|f| {
+            let related: Vec<usize> = (0..claims.len())
+                .filter(|&i| claims[i].documents.contains(&f.id))
+                .collect();
+            (!related.is_empty()).then_some((f, related))
+        })
+        .collect();
+    Selection { claims, files }
+}
+
+/// Every resource of one member's export, in stream order.
+pub fn member_resources(book: &Book, m: &Member, sel: &Selection) -> Result<Vec<Value>, CliError> {
+    let coverage = fhir::coverage_id(m);
     let mut out = vec![
         fhir::organization(),
         fhir::patient(m, book.full_name(&m.id).as_deref()),
         fhir::coverage(m),
     ];
-    for c in &claims {
+    for c in &sel.claims {
         let balances = book.balances_in(&c.document, &c.claim.patient);
         let refs: Vec<&Balances> = balances.iter().collect();
         out.push(fhir::explanation_of_benefit(c, &coverage, &refs));
     }
-    for f in &book.files {
-        let related: Vec<&ClaimRecord> = claims.iter().filter(|c| c.document == f.id).collect();
-        if related.is_empty() {
-            continue;
-        }
+    for (f, related) in &sel.files {
+        let related: Vec<&ClaimRecord> = related.iter().map(|&i| &sel.claims[i]).collect();
         let bytes = std::fs::read(&f.path).map_err(|e| CliError::Other(format!("reading a statement again: {e}")))?;
         out.push(fhir::document_reference(f, &m.id, &related));
-        out.push(fhir::binary(f, &bytes));
+        out.push(fhir::binary(f, &m.id, &bytes));
     }
     Ok(out)
 }
 
 fn export(ctx: &Ctx, args: &ExportArgs) -> Result<(), CliError> {
-    if let Some(d) = &args.since {
-        dates::parse_iso(d)?;
-    }
+    let since = args.since.as_deref().map(iso).transpose()?;
     if !args.ndjson && args.output.is_none() {
         return Err(CliError::Usage(
             "say where the records go: --ndjson for stdout (`| medrec import --from uhc`) or -o <DIR>".into(),
@@ -372,30 +428,25 @@ fn export(ctx: &Ctx, args: &ExportArgs) -> Result<(), CliError> {
     let scan = ctx.records()?;
     let members = scan.book.members();
     let m = find_member(&members, &args.who.patient)?;
-    let since = args.since.as_deref();
+    let since = since.as_deref();
 
     if let Some(dir) = &args.output {
-        let mine: Vec<&StatementFile> = scan
-            .book
-            .files
-            .iter()
-            .filter(|f| {
-                scan.book
-                    .claims()
-                    .iter()
-                    .any(|c| c.document == f.id && c.patient == m.id)
-            })
-            .collect();
-        if mine.iter().any(|f| !f.statement.synthetic) {
+        // A plain file of records, so every statement in the folder must be
+        // synthetic: a member's export draws on statements beyond the ones
+        // carrying their claims (names, group, the statement a claim's
+        // dependant appears on).
+        if scan.book.files.iter().any(|f| !f.statement.synthetic) {
             return Err(CliError::Usage(
-                "-o writes records to a plain file, so it is for synthetic statements only".into(),
+                "-o writes records to a plain file, so it is for folders of synthetic statements only".into(),
             )
-            .with_remedy(format!("pipe real records into medrec: `{BIN} records export --patient {} --ndjson | medrec import --from uhc`", m.id)));
+            .with_remedy(format!(
+                "pipe real records into medrec: `{BIN} records export --patient {} --ndjson | medrec import --from uhc`",
+                m.id
+            )));
         }
         std::fs::create_dir_all(dir).map_err(|e| CliError::Other(format!("creating {}: {e}", dir.display())))?;
         let path = dir.join("records.ndjson");
-        let file =
-            std::fs::File::create(&path).map_err(|e| CliError::Other(format!("creating {}: {e}", path.display())))?;
+        let file = open_private(&path, true)?;
         let trailer = write_stream(std::io::BufWriter::new(file), &scan.book, m, since)?;
         let summary = json!({ "schema": "records-export/v1", "path": path.display().to_string(), "counts": trailer.counts, "complete": trailer.complete });
         if ctx.json() {
@@ -403,15 +454,23 @@ fn export(ctx: &Ctx, args: &ExportArgs) -> Result<(), CliError> {
         } else {
             ctx.note(&format!("wrote {}", path.display()));
         }
+        if !trailer.complete {
+            // The summary is the one document; the trailer carries the error.
+            std::process::exit(1);
+        }
         return Ok(());
     }
     let stdout = std::io::stdout();
-    let trailer = write_stream(stdout.lock(), &scan.book, m, since)?;
-    if !trailer.complete {
-        // The trailer already carries the error; exit without a second document.
-        std::process::exit(1);
+    match write_stream(stdout.lock(), &scan.book, m, since) {
+        Ok(trailer) if trailer.complete => Ok(()),
+        // The trailer carries the error; exit without a second document.
+        Ok(_) => std::process::exit(1),
+        // stdout is the stream, so a write error goes to stderr only.
+        Err(e) => {
+            eprintln!("error: {}", e.message());
+            std::process::exit(e.exit_code());
+        }
     }
-    Ok(())
 }
 
 fn write_stream<W: Write>(
@@ -421,9 +480,9 @@ fn write_stream<W: Write>(
     since: Option<&str>,
 ) -> Result<crate::stream::Trailer, CliError> {
     let mut w = RecordsWriter::new(out, &header(m, since))?;
-    for f in &book.files {
-        let mine = book.claims().iter().any(|c| c.document == f.id && c.patient == m.id);
-        if mine && !f.statement.issues.is_empty() {
+    let sel = select(book, m, since);
+    for (f, _) in &sel.files {
+        if !f.statement.issues.is_empty() {
             let codes: Vec<&str> = f.statement.issues.iter().map(|i| i.code()).collect();
             w.skip(Skip {
                 resource_type: Some("ExplanationOfBenefit".into()),
@@ -431,14 +490,14 @@ fn write_stream<W: Write>(
                 search: None,
                 reason: format!(
                     "statement {} was read with issues ({}); a claim on it may be incomplete",
-                    fhir::document_id(&f.id),
+                    fhir::document_id(&f.id, &m.id),
                     codes.join(", ")
                 ),
                 code: "statement_issues".into(),
             });
         }
     }
-    match member_resources(book, m, since) {
+    match member_resources(book, m, &sel) {
         Ok(resources) => {
             for r in &resources {
                 w.resource(r)?;
@@ -518,15 +577,37 @@ fn claim_json(c: &ClaimRecord, detail: bool) -> Value {
     Value::Object(v)
 }
 
-fn in_range(date: Option<&str>, range: &RangeArgs) -> bool {
-    match date {
-        Some(d) => range.since.as_deref().is_none_or(|s| d >= s) && range.until.as_deref().is_none_or(|u| d <= u),
-        None => range.since.is_none() && range.until.is_none(),
+/// `--since` / `--until`, checked and zero-padded so they compare as strings.
+struct Window {
+    since: Option<String>,
+    until: Option<String>,
+}
+
+impl Window {
+    fn of(range: &RangeArgs) -> Result<Window, CliError> {
+        range.validate()?;
+        let w = Window {
+            since: range.since.as_deref().map(iso).transpose()?,
+            until: range.until.as_deref().map(iso).transpose()?,
+        };
+        if let (Some(s), Some(u)) = (&w.since, &w.until) {
+            if s > u {
+                return Err(CliError::Usage(format!("--since {s} is after --until {u}")));
+            }
+        }
+        Ok(w)
+    }
+
+    fn contains(&self, date: Option<&str>) -> bool {
+        match date {
+            Some(d) => self.since.as_deref().is_none_or(|s| d >= s) && self.until.as_deref().is_none_or(|u| d <= u),
+            None => self.since.is_none() && self.until.is_none(),
+        }
     }
 }
 
 fn claims_list(ctx: &Ctx, args: &ClaimsListArgs) -> Result<(), CliError> {
-    args.range.validate()?;
+    let window = Window::of(&args.range)?;
     let scan = ctx.records()?;
     let members = scan.book.members();
     let patient = args.patient.as_deref().map(|q| find_member(&members, q)).transpose()?;
@@ -535,7 +616,7 @@ fn claims_list(ctx: &Ctx, args: &ClaimsListArgs) -> Result<(), CliError> {
         .claims()
         .iter()
         .filter(|c| patient.is_none_or(|m| c.patient == m.id))
-        .filter(|c| in_range(c.service_start.as_deref().or(c.statement_date.as_deref()), &args.range))
+        .filter(|c| window.contains(c.service_start.as_deref().or(c.statement_date.as_deref())))
         .take(args.range.limit.map(|n| n as usize).unwrap_or(usize::MAX))
         .map(|c| claim_json(c, false))
         .collect();
@@ -656,14 +737,14 @@ fn document_of(f: &StatementFile) -> Document {
 }
 
 fn documents_list(ctx: &Ctx, range: &RangeArgs) -> Result<(), CliError> {
-    range.validate()?;
+    let window = Window::of(range)?;
     let scan = ctx.scan()?;
     let docs: Vec<Document> = scan
         .book
         .files
         .iter()
         .rev()
-        .filter(|f| in_range(f.statement.statement_date.as_deref(), range))
+        .filter(|f| window.contains(f.statement.statement_date.as_deref()))
         .take(range.limit.map(|n| n as usize).unwrap_or(usize::MAX))
         .map(document_of)
         .collect();
@@ -691,29 +772,49 @@ fn find_statement<'a>(book: &'a Book, q: &str) -> Result<&'a StatementFile, CliE
     }
 }
 
-/// Write `bytes` to `path`, owner-only, refusing to replace a file unless asked.
-fn write_private(path: &Path, bytes: &[u8], overwrite: bool) -> Result<(), CliError> {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true);
-    if overwrite {
-        opts.create(true).truncate(true);
-    } else {
-        opts.create_new(true);
+/// Open `path` for writing, owner-only (0600). An existing file is a usage
+/// error unless `replace`; a replaced file (or a symlink in its place) is
+/// removed first, so the new one gets the private mode and nothing is
+/// written through a link.
+fn open_private(path: &Path, replace: bool) -> Result<std::fs::File, CliError> {
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.is_dir() {
+            return Err(CliError::Usage(format!("{} is a folder", path.display())));
+        }
+        if !replace {
+            return Err(CliError::Usage(format!(
+                "{} exists; pass --overwrite to replace it",
+                path.display()
+            )));
+        }
+        std::fs::remove_file(path).map_err(|e| CliError::Other(format!("replacing {}: {e}", path.display())))?;
     }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    let mut f = opts.open(path).map_err(|e| {
+    opts.open(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AlreadyExists {
             CliError::Usage(format!("{} exists; pass --overwrite to replace it", path.display()))
         } else {
             CliError::Other(format!("writing {}: {e}", path.display()))
         }
-    })?;
-    f.write_all(bytes)
+    })
+}
+
+fn write_private(path: &Path, bytes: &[u8], overwrite: bool) -> Result<(), CliError> {
+    open_private(path, overwrite)?
+        .write_all(bytes)
         .map_err(|e| CliError::Other(format!("writing {}: {e}", path.display())))
+}
+
+/// Whether the file at `path` holds exactly `bytes`.
+fn same_content(path: &Path, bytes: &[u8]) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.len() == bytes.len() as u64)
+        && std::fs::read(path).is_ok_and(|b| b == bytes)
 }
 
 fn saved_name(f: &StatementFile) -> String {
@@ -734,39 +835,62 @@ fn documents_download(ctx: &Ctx, args: &DownloadArgs) -> Result<(), CliError> {
         std::fs::create_dir_all(&dir).map_err(|e| CliError::Other(format!("creating {}: {e}", dir.display())))?;
         let mut saved = Vec::new();
         let mut skipped = Vec::new();
+        // Names taken in this batch, case-folded: APFS and NTFS ignore case.
         let mut used = std::collections::HashSet::new();
         for f in &scan.book.files {
             let bytes = std::fs::read(&f.path).map_err(|e| CliError::Other(format!("reading a statement: {e}")))?;
             verify_pdf(&bytes)?;
-            let mut name = saved_name(f);
-            if !used.insert(name.clone()) {
-                name = format!("{}_{name}", f.id);
-                used.insert(name.clone());
+            // The member's file name, else one with the document id. A name
+            // already in the folder counts as this statement only when the
+            // file there holds the same bytes; otherwise the next name is tried.
+            let plain = saved_name(f);
+            let candidates = [plain.clone(), format!("{}_{plain}", f.id)];
+            let mut outcome = None;
+            for name in candidates.iter() {
+                if used.contains(&name.to_lowercase()) {
+                    continue;
+                }
+                let path = dir.join(name);
+                if same_content(&path, &bytes) && !args.overwrite {
+                    used.insert(name.to_lowercase());
+                    outcome = Some(Err("exists"));
+                    break;
+                }
+                if std::fs::symlink_metadata(&path).is_ok() && !args.overwrite {
+                    continue;
+                }
+                used.insert(name.to_lowercase());
+                outcome = Some(Ok(path));
+                break;
             }
-            let path = dir.join(&name);
-            // A re-run saves only what is new; --overwrite replaces the rest.
-            if !args.overwrite && std::fs::symlink_metadata(&path).is_ok() {
-                skipped.push(
-                    SkippedDocument::new(f.id.clone(), "already saved; --overwrite replaces it").with_code("exists"),
-                );
-                continue;
+            match outcome {
+                Some(Ok(path)) => {
+                    write_private(&path, &bytes, args.overwrite)?;
+                    saved.push(SavedDocument::from_document(
+                        &document_of(f),
+                        path.display().to_string(),
+                        bytes.len() as u64,
+                    ));
+                }
+                Some(Err(code)) => skipped
+                    .push(SkippedDocument::new(f.id.clone(), "already saved; --overwrite replaces it").with_code(code)),
+                None => skipped.push(
+                    SkippedDocument::new(f.id.clone(), "other files hold its names; --overwrite replaces them")
+                        .with_code("name_taken"),
+                ),
             }
-            write_private(&path, &bytes, args.overwrite)?;
-            saved.push(SavedDocument::from_document(
-                &document_of(f),
-                path.display().to_string(),
-                bytes.len() as u64,
-            ));
         }
         let kept = skipped.len();
         let batch = DownloadBatch::new(dir.display().to_string(), saved).with_skipped(skipped);
         if ctx.json() {
             output::json(&serde_json::to_value(&batch).unwrap_or_default());
         } else {
-            ctx.note(&format!(
-                "saved {} statement(s) to {}; {kept} already there",
-                batch.count, batch.dir
-            ));
+            let already = if kept > 0 {
+                format!("; {kept} already there")
+            } else {
+                String::new()
+            };
+            ctx.note(&format!("saved {} statement(s) to {}{already}", batch.count, batch.dir));
         }
         return Ok(());
     }
@@ -842,7 +966,9 @@ fn import_check(ctx: &Ctx) -> Result<(), CliError> {
         "plan_years": years,
         "statements_with_issues": with_issues,
         "issues": issues,
-        "ok": with_issues == 0,
+        // Every PDF read as a statement without an issue, and something read.
+        // A PDF that is not an EOB (a letter saved alongside) is not a problem.
+        "ok": !book.files.is_empty() && with_issues == 0 && skipped.keys().all(|k| *k == "not_eob"),
     });
     output::emit_one(ctx.json(), "import-check/v1", dto);
     Ok(())

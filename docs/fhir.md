@@ -19,9 +19,19 @@ Every resource carries `meta.source` `uhc:eob-pdf` and the tag
 | Claim | `c` + the claim number | stable across reprocessing |
 | Claim without a number | `x` + the first 10 hex of the document id + its index | a damaged statement |
 | Statement | first 16 hex of the PDF's SHA-256 | the same file saved twice is one statement |
+| DocumentReference, Binary | `doc-` / `bin-` + the statement id + `-` + the member id | a statement carrying two members' claims is a document of each, with its own subject |
 
 A claim printed on more than one statement (reprocessed) is the latest
-statement's version; `versions` in `claims list` counts them.
+statement's version; `versions` in `claims list` counts them. Two
+statements dated the same day are ordered by statement id, so which is
+"latest" between them is arbitrary but stable.
+
+Statements print first names only. Two members of one plan with the same
+first name are one member to `uhc`.
+
+A statement without a member ID gets a stand-in (`unknown-…`) to group its
+claims. It is never exported as UHC's identifier: that `Patient` has no
+`identifier` and that `Coverage` no `subscriberId`.
 
 ## Resources
 
@@ -31,7 +41,7 @@ statement's version; `versions` in `claims list` counts them.
 | `Patient` | the header and "Claim detail for" | `identifier` the member id (`MB`); `name.given` the first name; `name.text` the full name when a statement is addressed to that member |
 | `Coverage` | the header | `subscriberId`, `relationship` (EE self, SP spouse, DP common, CH child), `class` group number and name, `payor` |
 | `ExplanationOfBenefit` | a "Claim detail for" block | below |
-| `DocumentReference` | the statement PDF | `type.text` "Explanation of Benefits", `context.related` its claims, `context.period` the statement's service period |
+| `DocumentReference` | the statement PDF | `type.text` "Explanation of Benefits", `context.related` its claims, `context.period` the statement's service period. Every statement that carried one of the member's claims is exported, including one a later statement superseded |
 | `Binary` | the statement PDF | base64; the `DocumentReference` points at it with `content[].attachment.url` `Binary/<id>` |
 
 ### ExplanationOfBenefit
@@ -41,13 +51,14 @@ statement's version; `versions` in `claims list` counts them.
 | `identifier` (`uc`) | Claim number |
 | `type.text` | "Medical claim": the statement prints no claim type, so there is no `claim-type` code |
 | `billablePeriod` | the first service line's date to the last |
-| `created` | the statement date |
-| `provider.display` | Provider |
-| `supportingInfo` | `info` with `valueReference` to the statement's `DocumentReference`; `performingnetworkcontractingstatus` (contracted / non-contracted) from Status; `patientaccountnumber` |
+| `created` | the statement date; when none is printed, `_created` with the `data-absent-reason` extension (`unknown`) |
+| `provider.display` | Provider; when none is printed, the `data-absent-reason` extension |
+| `supportingInfo` | `info` with `valueReference` to the statement's `DocumentReference`; `patientaccountnumber` |
+| `adjudication` | Status, as CARIN STU2's `benefitpaymentstatus` (`C4BBAdjudicationDiscriminator`) with reason `innetwork` / `outofnetwork` (`C4BBPayerAdjudicationStatus`) |
 | `insurance` | the member's `Coverage` |
 | `item[]` | each service line: `productOrService.text`, `servicedDate` or `servicedPeriod`, `noteNumber` for its codes, `net` the billed amount, `adjudication` |
 | `total[]` | the "Total amount" row |
-| `processNote[]` | "XX -- text", numbered in code order |
+| `processNote[]` | "XX -- text", numbered in code order, `type` `print` |
 | `benefitBalance[]` | the plan balances on the claim's statement: one per network (in, out) and unit (individual, family), term annual; `financial[]` deductible and out-of-pocket limit with `allowedMoney` (the maximum) and `usedMoney` (progress so far) |
 
 The nine amounts and their adjudication categories, each coding with its
@@ -77,3 +88,9 @@ and the patient `{id, organization, label, relationship}`; then the
 resources in the order above; then `records-stream-end/v1` with counts. A
 statement read with issues adds a `skipped[]` entry with code
 `statement_issues` naming the document and the issue codes.
+
+`--since D` exports what changed since D: the claims whose latest statement
+is dated D or later (a claim with no statement date counts by its service
+date), and the statements dated D or later that carry them. A claim
+serviced in March and adjudicated on an April statement is in
+`--since <April>`.

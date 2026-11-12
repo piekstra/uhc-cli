@@ -1,0 +1,56 @@
+   SYNTHETIC TEST DATA - NOT A REAL STATEMENT
+   UnitedHealthcare                                                          Explanation of Benefits
+                                                                             Member/Patient:   ALEX EXAMPLE
+                                                                             Member ID:        SYNM000001
+                                                                             Relationship:     EE
+                                                                             Group name:       EXAMPLE EMPLOYER
+                                                                             Group number:     SYNG0001
+
+   Hi, ALEX.                                                                 Claim summary
+   THIS IS NOT A BILL. This Explanation of Benefits (EOB) is a summary of    Services in this statement occurred
+   services received and how plan benefits were applied.                     between Jun. 2, 2026 - Jun. 2, 2026
+                                                                             Provider billed               $700.00
+                                                                             Your total amount owed         $70.00
+   Plan balances
+                     As of 07/10/2026 for plan year 2026
+
+    Balances for ALEX                                        Maximum         Progress so far        Remaining
+                                                              amount                                  amount
+         Network           Deductible                       $1,500.00          $1,500.00                  Met
+                           Out-of-pocket limit              $4,000.00          $1,930.00            $2,070.00
+         Out-of-Network    Deductible                       $3,000.00            $300.00            $2,700.00
+                           Out-of-pocket limit              $8,000.00            $300.00            $7,700.00
+
+   Claim detail for ALEX
+   Provider: EXAMPLE HOSPITAL                                                Patient account number: SYNA0005
+   Status: Network                                                           Claim number: SYNC00000005
+
+   EMERGENCY ROOM VISIT
+   HIGH COMPLEXITY                   UG       $500.00     $200.00     $300.00     $240.00       $0.00      $0.00     $60.00       $0.00      $60.00
+   06/02/2026
+
+   STD-EOB
+   000000000000000-A-S-PS-E
+   Page 1 of 2
+
+   07/10/2026
+
+   Claim detail for ALEX (continued)
+   Provider: EXAMPLE HOSPITAL                                                Claim number: SYNC00000005
+
+   LAB PANEL                         UG       $200.00      $50.00     $150.00     $130.00       $0.00      $0.00     $20.00       $0.00      $20.00
+   06/02/2026
+   BILLING ADJUSTMENT                           $0.00       $0.00       $0.00       $0.00       $0.00      $0.00      $0.00    - $10.00    - $10.00
+   06/02/2026
+   FOR A PRIOR OVERPAYMENT
+
+   Total amount                               $700.00     $250.00     $450.00     $370.00       $0.00      $0.00     $80.00    - $10.00      $70.00
+
+   Explanation of your claim processing codes
+   UG -- YOU HAVE RECEIVED A DISCOUNT FROM A NETWORK PROVIDER.
+
+   STD-EOB
+   000000000000000-A-S-PS-E
+   Page 2 of 2
+
+   07/10/2026

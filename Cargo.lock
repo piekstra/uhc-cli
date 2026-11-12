@@ -2356,6 +2356,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "clap_complete",
+ "libc",
  "pk-cli-auth",
  "pk-cli-config",
  "pk-cli-core",
