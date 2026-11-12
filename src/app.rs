@@ -1117,7 +1117,7 @@ mod tests {
         let text = include_str!("../tests/fixtures/eob/2026-04-30-statement.txt");
         Book {
             files: vec![StatementFile {
-                id: "0123456789abcdef".into(),
+                id: "feedfacecafebeef".into(),
                 sha256: "0".repeat(64),
                 path,
                 bytes: 1,
