@@ -1,0 +1,832 @@
+//! The commands.
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use clap::CommandFactory;
+use pk_cli_auth::AuthStatus;
+use pk_cli_config::ConfigStore;
+use pk_cli_core::info::{AuthInfo, CliInfo};
+use pk_cli_core::{dates, output, resolve, CliError, Paged, RangeArgs};
+use pk_cli_documents::{fs_safe, verify_pdf, Document, DownloadBatch, SavedDocument};
+use pk_cli_selfupdate::Updater;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
+
+use crate::cents::Cents;
+use crate::cli::*;
+use crate::eob::Issue;
+use crate::fhir;
+use crate::files::{self, Scan};
+use crate::model::{Balances, Book, ClaimRecord, Member, StatementFile, ORGANIZATION, ORGANIZATION_NAME};
+use crate::stream::{
+    Header, RecordsWriter, Skip, SourceCli, StreamOrganization, StreamPatient, FHIR_VERSION, STREAM_SCHEMA,
+};
+
+const REPO: &str = "piekstra/uhc-cli";
+pub const PROFILES: &[&str] = &["health-records/v1", "documents/v1"];
+/// Where the statements come from; the stream's `organization.fhir_base`.
+pub const SITE_BASE: &str = "https://member.uhc.com/myuhc";
+const CONFIG_KEYS: &str = "import_dir";
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Config {
+    /// The folder holding the downloaded EOB statement PDFs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_dir: Option<String>,
+}
+
+struct Ctx<'a> {
+    cli: &'a Cli,
+    store: ConfigStore,
+}
+
+impl Ctx<'_> {
+    fn json(&self) -> bool {
+        self.cli.common.json
+    }
+
+    fn note(&self, msg: &str) {
+        if !self.cli.common.quiet {
+            eprintln!("{msg}");
+        }
+    }
+
+    fn import_dir(&self) -> Result<PathBuf, CliError> {
+        if let Some(d) = &self.cli.dir {
+            return Ok(expand(d));
+        }
+        let cfg: Config = self.store.load()?;
+        match cfg.import_dir {
+            Some(d) => Ok(expand(Path::new(&d))),
+            None => Err(CliError::Usage(format!(
+                "no import folder: download your EOB statements from myuhc.com into a folder, then \
+                 `{BIN} config set import_dir <DIR>` (or pass --dir)"
+            ))),
+        }
+    }
+
+    fn scan(&self) -> Result<Scan, CliError> {
+        let dir = self.import_dir()?;
+        let scan = files::scan(&dir)?;
+        if self.cli.common.verbose {
+            eprintln!(
+                "read {} statement(s) from {} PDF(s); {} skipped",
+                scan.book.files.len(),
+                scan.pdfs,
+                scan.skipped.len()
+            );
+        }
+        Ok(scan)
+    }
+
+    /// The statements, for a command that reads what they say. Says on
+    /// stderr how many were read with issues (counts only), and fails when
+    /// statements were found but none could be read: a changed layout, not
+    /// an empty folder.
+    fn records(&self) -> Result<Scan, CliError> {
+        let scan = self.scan()?;
+        let files = &scan.book.files;
+        let with_issues = files.iter().filter(|f| !f.statement.issues.is_empty()).count();
+        if with_issues > 0 {
+            self.note(&format!(
+                "note: {with_issues} statement(s) read with issues; `{BIN} import check` counts them"
+            ));
+        }
+        let unread = |f: &&StatementFile| f.statement.claims.is_empty() && f.statement.balances.is_empty();
+        if !files.is_empty() && files.iter().all(|f| unread(&f)) {
+            return Err(CliError::Upstream(format!(
+                "{} PDF(s) look like UnitedHealthcare EOB statements but none could be read; the statement \
+                 layout may have changed (`{BIN} import check`)",
+                files.len()
+            )));
+        }
+        Ok(scan)
+    }
+}
+
+fn expand(p: &Path) -> PathBuf {
+    match (p.strip_prefix("~"), std::env::var_os("HOME")) {
+        (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => p.to_path_buf(),
+    }
+}
+
+pub fn main() {
+    let cli = <Cli as clap::Parser>::parse();
+    if let Err(e) = run(&cli) {
+        std::process::exit(output::fail(&e, cli.common.json));
+    }
+}
+
+pub fn run(cli: &Cli) -> Result<(), CliError> {
+    let ctx = Ctx {
+        cli,
+        store: ConfigStore::new(BIN).with_override(cli.config.clone()),
+    };
+    match &cli.command {
+        Command::Auth(cmd) => auth(&ctx, cmd),
+        Command::Config(cmd) => config(&ctx, cmd),
+        Command::Patients(PatientsCmd::List) => patients(&ctx),
+        Command::Records(RecordsCmd::Export(args)) => export(&ctx, args),
+        Command::Claims(ClaimsCmd::List(args)) => claims_list(&ctx, args),
+        Command::Claims(ClaimsCmd::Get { claim }) => claims_get(&ctx, claim),
+        Command::Accumulators(args) => accumulators(&ctx, args),
+        Command::Documents(DocumentsCmd::List(range)) => documents_list(&ctx, range),
+        Command::Documents(DocumentsCmd::Download(args)) => documents_download(&ctx, args),
+        Command::Import(ImportCmd::Check) => import_check(&ctx),
+        Command::SelfUpdate(args) => Updater {
+            repo: REPO.into(),
+            binary: BIN.into(),
+            target: env!("BUILD_TARGET").into(),
+            current: env!("CARGO_PKG_VERSION").into(),
+        }
+        .run(args, cli.common.json, cli.common.quiet),
+        Command::Completions { shell } => {
+            clap_complete::generate(*shell, &mut Cli::command(), BIN, &mut std::io::stdout());
+            Ok(())
+        }
+        Command::Info => {
+            let info = CliInfo::new(
+                BIN,
+                env!("CARGO_PKG_VERSION"),
+                &format!("https://github.com/{REPO}"),
+                AuthInfo {
+                    required: false,
+                    method: "none".into(),
+                    login_hint: None,
+                },
+                &["patients", "records", "claims", "accumulators", "documents", "import"],
+            )
+            .with_profiles(PROFILES);
+            output::json(&serde_json::to_value(&info).expect("CliInfo serializes"));
+            Ok(())
+        }
+    }
+}
+
+// ------------------------------------------------------------------ auth
+
+fn auth(ctx: &Ctx, cmd: &AuthCmd) -> Result<(), CliError> {
+    match cmd {
+        AuthCmd::Login => Err(CliError::Usage(format!(
+            "nothing to sign in to: {BIN} reads the EOB statements you download from myuhc.com \
+             (`{BIN} config set import_dir <DIR>`)"
+        ))),
+        AuthCmd::Status => {
+            AuthStatus::not_required().emit(ctx.json());
+            Ok(())
+        }
+        AuthCmd::Logout => {
+            if ctx.json() {
+                output::json(&json!({ "schema": "auth-logout/v1", "signed_out": [] }));
+            }
+            ctx.note("nothing is stored: the files source keeps no credential");
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------- config
+
+fn config(ctx: &Ctx, cmd: &ConfigCmd) -> Result<(), CliError> {
+    match cmd {
+        ConfigCmd::Path => {
+            let path = ctx.store.path()?;
+            if ctx.json() {
+                output::json(&json!({ "schema": "config-path/v1", "path": path.display().to_string() }));
+            } else {
+                println!("{}", path.display());
+            }
+            Ok(())
+        }
+        ConfigCmd::Show => {
+            let cfg: Config = ctx.store.load()?;
+            let mut v = serde_json::to_value(&cfg).unwrap_or_default();
+            if ctx.json() {
+                v["schema"] = "config/v1".into();
+                output::json(&v);
+            } else if v.as_object().is_some_and(|o| o.is_empty()) {
+                ctx.note("no settings (`uhc config set import_dir <DIR>`)");
+            } else {
+                output::render(&v);
+            }
+            Ok(())
+        }
+        ConfigCmd::Set { key, value } => {
+            let mut cfg: Config = ctx.store.load()?;
+            match key.as_str() {
+                "import_dir" => {
+                    let dir = expand(Path::new(value));
+                    if !dir.is_dir() {
+                        return Err(CliError::Usage(format!("{} is not a folder", dir.display())));
+                    }
+                    cfg.import_dir = Some(dir.display().to_string());
+                }
+                other => {
+                    return Err(CliError::Usage(format!(
+                        "unknown config key `{other}` (known: {CONFIG_KEYS})"
+                    )))
+                }
+            }
+            ctx.store.save(&cfg)?;
+            ctx.note(&format!("{key} set"));
+            Ok(())
+        }
+        ConfigCmd::Unset { key } => {
+            let mut cfg: Config = ctx.store.load()?;
+            match key.as_str() {
+                "import_dir" => cfg.import_dir = None,
+                other => {
+                    return Err(CliError::Usage(format!(
+                        "unknown config key `{other}` (known: {CONFIG_KEYS})"
+                    )))
+                }
+            }
+            ctx.store.save(&cfg)?;
+            ctx.note(&format!("{key} unset"));
+            Ok(())
+        }
+    }
+}
+
+// -------------------------------------------------------------- patients
+
+fn find_member<'a>(members: &'a [Member], q: &str) -> Result<&'a Member, CliError> {
+    if members.is_empty() {
+        return Err(CliError::NotFound(
+            "no member: the import folder holds no UnitedHealthcare EOB statement (`uhc import check`)".into(),
+        ));
+    }
+    resolve::pick(members, q, |m| vec![m.id.clone()], |m| &m.label, "member")
+}
+
+fn patients(ctx: &Ctx) -> Result<(), CliError> {
+    let scan = ctx.records()?;
+    let items: Vec<Value> = scan
+        .book
+        .members()
+        .iter()
+        .map(|m| {
+            let mut v = serde_json::to_value(m).unwrap_or_default();
+            v["fhir_base"] = SITE_BASE.into();
+            v
+        })
+        .collect();
+    if ctx.json() {
+        output::json(&json!({ "schema": "patient-list/v1", "items": items }));
+    } else if items.is_empty() {
+        ctx.note("no member: the import folder holds no UnitedHealthcare EOB statement (`uhc import check`)");
+    } else {
+        output::table(&output::table_view(
+            &items,
+            &["label", "id", "relationship", "claims", "latest_statement"],
+        ));
+    }
+    Ok(())
+}
+
+// --------------------------------------------------------------- records
+
+fn now_rfc3339() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    dates::fmt_rfc3339(secs)
+}
+
+fn header(m: &Member, since: Option<&str>) -> Header {
+    Header {
+        schema: STREAM_SCHEMA.into(),
+        source: SourceCli {
+            cli: BIN.into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+        },
+        organization: StreamOrganization {
+            id: ORGANIZATION.into(),
+            name: ORGANIZATION_NAME.into(),
+            fhir_base: SITE_BASE.into(),
+            vendor: Some("uhc".into()),
+        },
+        patient: StreamPatient {
+            id: m.id.clone(),
+            organization: Some(ORGANIZATION.into()),
+            label: Some(m.label.clone()),
+            relationship: m.relationship.clone(),
+        },
+        since: since.map(str::to_string),
+        pulled_at: now_rfc3339(),
+        fhir_version: Some(FHIR_VERSION.into()),
+        method: Some("portal".into()),
+    }
+}
+
+/// Every resource of one member's export, in stream order.
+pub fn member_resources(book: &Book, m: &Member, since: Option<&str>) -> Result<Vec<Value>, CliError> {
+    let coverage = fhir::coverage_id(m);
+    let claims: Vec<ClaimRecord> = book
+        .claims()
+        .into_iter()
+        .filter(|c| c.patient == m.id)
+        .filter(|c| match since {
+            Some(s) => c
+                .service_start
+                .as_deref()
+                .or(c.statement_date.as_deref())
+                .is_some_and(|d| d >= s),
+            None => true,
+        })
+        .collect();
+    let mut out = vec![
+        fhir::organization(),
+        fhir::patient(m, book.full_name(&m.id).as_deref()),
+        fhir::coverage(m),
+    ];
+    for c in &claims {
+        let balances = book.balances_in(&c.document, &c.claim.patient);
+        let refs: Vec<&Balances> = balances.iter().collect();
+        out.push(fhir::explanation_of_benefit(c, &coverage, &refs));
+    }
+    for f in &book.files {
+        let related: Vec<&ClaimRecord> = claims.iter().filter(|c| c.document == f.id).collect();
+        if related.is_empty() {
+            continue;
+        }
+        let bytes = std::fs::read(&f.path).map_err(|e| CliError::Other(format!("reading a statement again: {e}")))?;
+        out.push(fhir::document_reference(f, &m.id, &related));
+        out.push(fhir::binary(f, &bytes));
+    }
+    Ok(out)
+}
+
+fn export(ctx: &Ctx, args: &ExportArgs) -> Result<(), CliError> {
+    if let Some(d) = &args.since {
+        dates::parse_iso(d)?;
+    }
+    if !args.ndjson && args.output.is_none() {
+        return Err(CliError::Usage(
+            "say where the records go: --ndjson for stdout (`| medrec import --from uhc`) or -o <DIR>".into(),
+        ));
+    }
+    let scan = ctx.records()?;
+    let members = scan.book.members();
+    let m = find_member(&members, &args.who.patient)?;
+    let since = args.since.as_deref();
+
+    if let Some(dir) = &args.output {
+        let mine: Vec<&StatementFile> = scan
+            .book
+            .files
+            .iter()
+            .filter(|f| {
+                scan.book
+                    .claims()
+                    .iter()
+                    .any(|c| c.document == f.id && c.patient == m.id)
+            })
+            .collect();
+        if mine.iter().any(|f| !f.statement.synthetic) {
+            return Err(CliError::Usage(
+                "-o writes records to a plain file, so it is for synthetic statements only".into(),
+            )
+            .with_remedy(format!("pipe real records into medrec: `{BIN} records export --patient {} --ndjson | medrec import --from uhc`", m.id)));
+        }
+        std::fs::create_dir_all(dir).map_err(|e| CliError::Other(format!("creating {}: {e}", dir.display())))?;
+        let path = dir.join("records.ndjson");
+        let file =
+            std::fs::File::create(&path).map_err(|e| CliError::Other(format!("creating {}: {e}", path.display())))?;
+        let trailer = write_stream(std::io::BufWriter::new(file), &scan.book, m, since)?;
+        let summary = json!({ "schema": "records-export/v1", "path": path.display().to_string(), "counts": trailer.counts, "complete": trailer.complete });
+        if ctx.json() {
+            output::json(&summary);
+        } else {
+            ctx.note(&format!("wrote {}", path.display()));
+        }
+        return Ok(());
+    }
+    let stdout = std::io::stdout();
+    let trailer = write_stream(stdout.lock(), &scan.book, m, since)?;
+    if !trailer.complete {
+        // The trailer already carries the error; exit without a second document.
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn write_stream<W: Write>(
+    out: W,
+    book: &Book,
+    m: &Member,
+    since: Option<&str>,
+) -> Result<crate::stream::Trailer, CliError> {
+    let mut w = RecordsWriter::new(out, &header(m, since))?;
+    for f in &book.files {
+        let mine = book.claims().iter().any(|c| c.document == f.id && c.patient == m.id);
+        if mine && !f.statement.issues.is_empty() {
+            let codes: Vec<&str> = f.statement.issues.iter().map(|i| i.code()).collect();
+            w.skip(Skip {
+                resource_type: Some("ExplanationOfBenefit".into()),
+                id: None,
+                search: None,
+                reason: format!(
+                    "statement {} was read with issues ({}); a claim on it may be incomplete",
+                    fhir::document_id(&f.id),
+                    codes.join(", ")
+                ),
+                code: "statement_issues".into(),
+            });
+        }
+    }
+    match member_resources(book, m, since) {
+        Ok(resources) => {
+            for r in &resources {
+                w.resource(r)?;
+            }
+            w.finish(now_rfc3339(), None)
+        }
+        Err(e) => w.finish(now_rfc3339(), Some(&e)),
+    }
+}
+
+// ---------------------------------------------------------------- claims
+
+fn amounts_json(a: &crate::eob::Amounts) -> Map<String, Value> {
+    a.fields()
+        .iter()
+        .map(|(k, c)| ((*k).to_string(), serde_json::to_value(c.money()).unwrap_or_default()))
+        .collect()
+}
+
+fn claim_json(c: &ClaimRecord, detail: bool) -> Value {
+    let mut v = Map::new();
+    v.insert("id".into(), c.id.clone().into());
+    if let Some(n) = &c.claim_number {
+        v.insert("claim_number".into(), n.clone().into());
+    }
+    v.insert("patient".into(), c.patient.clone().into());
+    v.insert("label".into(), c.label.clone().into());
+    if let Some(p) = &c.claim.provider {
+        v.insert("provider".into(), p.clone().into());
+    }
+    if let Some(n) = c.claim.network {
+        v.insert("network".into(), n.code().into());
+    }
+    if let Some(s) = &c.service_start {
+        v.insert("service_start".into(), s.clone().into());
+    }
+    if let Some(e) = &c.service_end {
+        v.insert("service_end".into(), e.clone().into());
+    }
+    v.extend(amounts_json(&c.totals));
+    if let Some(d) = &c.statement_date {
+        v.insert("statement_date".into(), d.clone().into());
+    }
+    v.insert("document".into(), c.document.clone().into());
+    v.insert("versions".into(), c.versions.into());
+    if detail {
+        if let Some(a) = &c.claim.account_number {
+            v.insert("patient_account_number".into(), a.clone().into());
+        }
+        let lines: Vec<Value> = c
+            .claim
+            .lines
+            .iter()
+            .map(|l| {
+                let mut lv = Map::new();
+                lv.insert("description".into(), l.description.clone().into());
+                if let Some(d) = &l.date {
+                    lv.insert("date".into(), d.clone().into());
+                }
+                if let Some(d) = &l.date_end {
+                    lv.insert("date_end".into(), d.clone().into());
+                }
+                if !l.codes.is_empty() {
+                    lv.insert("codes".into(), json!(l.codes));
+                }
+                lv.extend(amounts_json(&l.amounts));
+                Value::Object(lv)
+            })
+            .collect();
+        v.insert("lines".into(), Value::Array(lines));
+        if !c.codes.is_empty() {
+            v.insert("codes".into(), json!(c.codes));
+        }
+    } else {
+        v.insert("lines".into(), c.claim.lines.len().into());
+    }
+    Value::Object(v)
+}
+
+fn in_range(date: Option<&str>, range: &RangeArgs) -> bool {
+    match date {
+        Some(d) => range.since.as_deref().is_none_or(|s| d >= s) && range.until.as_deref().is_none_or(|u| d <= u),
+        None => range.since.is_none() && range.until.is_none(),
+    }
+}
+
+fn claims_list(ctx: &Ctx, args: &ClaimsListArgs) -> Result<(), CliError> {
+    args.range.validate()?;
+    let scan = ctx.records()?;
+    let members = scan.book.members();
+    let patient = args.patient.as_deref().map(|q| find_member(&members, q)).transpose()?;
+    let claims: Vec<Value> = scan
+        .book
+        .claims()
+        .iter()
+        .filter(|c| patient.is_none_or(|m| c.patient == m.id))
+        .filter(|c| in_range(c.service_start.as_deref().or(c.statement_date.as_deref()), &args.range))
+        .take(args.range.limit.map(|n| n as usize).unwrap_or(usize::MAX))
+        .map(|c| claim_json(c, false))
+        .collect();
+    if ctx.json() {
+        Paged::new("claim", claims).emit(true);
+    } else if claims.is_empty() {
+        ctx.note("no claims");
+    } else {
+        output::table(&output::table_view(
+            &claims,
+            &[
+                "service_start",
+                "label",
+                "provider",
+                "billed",
+                "plan_paid",
+                "you_owe",
+                "claim_number",
+            ],
+        ));
+    }
+    Ok(())
+}
+
+fn claims_get(ctx: &Ctx, q: &str) -> Result<(), CliError> {
+    let scan = ctx.records()?;
+    let claims = scan.book.claims();
+    let q = q.trim();
+    let c = claims
+        .iter()
+        .find(|c| c.id == q || c.claim_number.as_deref() == Some(q))
+        .ok_or_else(|| CliError::NotFound(format!("no claim {q} in the statements (`uhc claims list`)")))?;
+    output::emit_one(ctx.json(), "claim", claim_json(c, true));
+    Ok(())
+}
+
+// ---------------------------------------------------------- accumulators
+
+fn accumulators(ctx: &Ctx, args: &AccumulatorsArgs) -> Result<(), CliError> {
+    let scan = ctx.records()?;
+    let members = scan.book.members();
+    let patient = args.patient.as_deref().map(|q| find_member(&members, q)).transpose()?;
+    let items: Vec<Value> = scan
+        .book
+        .balances()
+        .iter()
+        .filter(|b| args.year.is_none_or(|y| b.plan_year == Some(y)))
+        .filter(|b| match patient {
+            Some(m) => b.patient == m.id || (b.family && b.member_id == m.member_id),
+            None => true,
+        })
+        .map(balance_json)
+        .collect();
+    if ctx.json() {
+        Paged::new("accumulator", items).emit(true);
+    } else if items.is_empty() {
+        ctx.note("no plan balances in the statements");
+    } else {
+        output::table(&output::table_view(
+            &items,
+            &[
+                "plan_year",
+                "label",
+                "network",
+                "limit",
+                "used",
+                "maximum",
+                "remaining",
+                "met",
+                "as_of",
+            ],
+        ));
+    }
+    Ok(())
+}
+
+fn balance_json(b: &Balances) -> Value {
+    let mut v = Map::new();
+    v.insert("patient".into(), b.patient.clone().into());
+    v.insert("label".into(), b.label.clone().into());
+    v.insert("family".into(), b.family.into());
+    if let Some(y) = b.plan_year {
+        v.insert("plan_year".into(), y.into());
+    }
+    if let Some(d) = &b.as_of {
+        v.insert("as_of".into(), d.clone().into());
+    }
+    v.insert("network".into(), b.network.code().into());
+    v.insert("limit".into(), b.limit.code().into());
+    let money = |c: Cents| serde_json::to_value(c.money()).unwrap_or_default();
+    v.insert("maximum".into(), money(b.maximum));
+    v.insert("used".into(), money(b.used));
+    v.insert("remaining".into(), money(b.remaining));
+    v.insert("met".into(), b.met.into());
+    v.insert("document".into(), b.document.clone().into());
+    Value::Object(v)
+}
+
+// ------------------------------------------------------------- documents
+
+fn document_of(f: &StatementFile) -> Document {
+    let mut d = Document::new(
+        f.id.clone(),
+        match &f.statement.statement_date {
+            Some(date) => format!("UnitedHealthcare EOB {date}"),
+            None => "UnitedHealthcare EOB".to_string(),
+        },
+    );
+    d.date = f.statement.statement_date.clone();
+    d.category = Some("eob".into());
+    d.file = f.path.file_name().and_then(|n| n.to_str()).map(fs_safe);
+    d
+}
+
+fn documents_list(ctx: &Ctx, range: &RangeArgs) -> Result<(), CliError> {
+    range.validate()?;
+    let scan = ctx.scan()?;
+    let docs: Vec<Document> = scan
+        .book
+        .files
+        .iter()
+        .rev()
+        .filter(|f| in_range(f.statement.statement_date.as_deref(), range))
+        .take(range.limit.map(|n| n as usize).unwrap_or(usize::MAX))
+        .map(document_of)
+        .collect();
+    if !ctx.json() && docs.is_empty() {
+        ctx.note("no statements in the import folder (`uhc import check`)");
+        return Ok(());
+    }
+    Paged::new("document", docs).emit(ctx.json());
+    Ok(())
+}
+
+fn find_statement<'a>(book: &'a Book, q: &str) -> Result<&'a StatementFile, CliError> {
+    let q = q.trim().to_ascii_lowercase();
+    if q.len() < 6 {
+        return Err(CliError::Usage("give at least 6 characters of the document id".into()));
+    }
+    let hits: Vec<&StatementFile> = book.files.iter().filter(|f| f.id.starts_with(&q)).collect();
+    match hits.as_slice() {
+        [one] => Ok(one),
+        [] => Err(CliError::NotFound(format!("no document {q} (`uhc documents list`)"))),
+        _ => Err(CliError::NotFound(format!(
+            "{q} matches {} documents; give more of the id",
+            hits.len()
+        ))),
+    }
+}
+
+/// Write `bytes` to `path`, owner-only, refusing to replace a file unless asked.
+fn write_private(path: &Path, bytes: &[u8], overwrite: bool) -> Result<(), CliError> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true);
+    if overwrite {
+        opts.create(true).truncate(true);
+    } else {
+        opts.create_new(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            CliError::Usage(format!("{} exists; pass --overwrite to replace it", path.display()))
+        } else {
+            CliError::Other(format!("writing {}: {e}", path.display()))
+        }
+    })?;
+    f.write_all(bytes)
+        .map_err(|e| CliError::Other(format!("writing {}: {e}", path.display())))
+}
+
+fn saved_name(f: &StatementFile) -> String {
+    let doc = document_of(f);
+    match doc.file {
+        Some(name) if !name.is_empty() => name,
+        _ => format!("{}_uhc-eob_{}.pdf", doc.date.as_deref().unwrap_or("undated"), f.id),
+    }
+}
+
+fn documents_download(ctx: &Ctx, args: &DownloadArgs) -> Result<(), CliError> {
+    let scan = ctx.scan()?;
+    if args.all {
+        let dir = args.output.clone().unwrap_or_else(|| PathBuf::from("."));
+        if dir.as_os_str() == "-" {
+            return Err(CliError::Usage("--all writes a folder, not stdout".into()));
+        }
+        std::fs::create_dir_all(&dir).map_err(|e| CliError::Other(format!("creating {}: {e}", dir.display())))?;
+        let mut saved = Vec::new();
+        let mut used = std::collections::HashSet::new();
+        for f in &scan.book.files {
+            let bytes = std::fs::read(&f.path).map_err(|e| CliError::Other(format!("reading a statement: {e}")))?;
+            verify_pdf(&bytes)?;
+            let mut name = saved_name(f);
+            if !used.insert(name.clone()) {
+                name = format!("{}_{name}", f.id);
+                used.insert(name.clone());
+            }
+            let path = dir.join(&name);
+            write_private(&path, &bytes, args.overwrite)?;
+            saved.push(SavedDocument::from_document(
+                &document_of(f),
+                path.display().to_string(),
+                bytes.len() as u64,
+            ));
+        }
+        let batch = DownloadBatch::new(dir.display().to_string(), saved);
+        if ctx.json() {
+            output::json(&serde_json::to_value(&batch).unwrap_or_default());
+        } else {
+            ctx.note(&format!("saved {} statement(s) to {}", batch.count, batch.dir));
+        }
+        return Ok(());
+    }
+    let id = args.id.as_deref().expect("clap requires an id without --all");
+    let f = find_statement(&scan.book, id)?;
+    let bytes = std::fs::read(&f.path).map_err(|e| CliError::Other(format!("reading a statement: {e}")))?;
+    verify_pdf(&bytes)?;
+    let doc = document_of(f);
+    match args.output.as_deref() {
+        Some(p) if p.as_os_str() == "-" => {
+            std::io::stdout()
+                .write_all(&bytes)
+                .map_err(|e| CliError::Other(format!("writing stdout: {e}")))?;
+            Ok(())
+        }
+        other => {
+            let path = match other {
+                Some(p) if p.is_dir() => p.join(saved_name(f)),
+                Some(p) => p.to_path_buf(),
+                None => PathBuf::from(saved_name(f)),
+            };
+            write_private(&path, &bytes, args.overwrite)?;
+            let saved = SavedDocument::from_document(&doc, path.display().to_string(), bytes.len() as u64);
+            if ctx.json() {
+                output::json(&serde_json::to_value(&saved).unwrap_or_default());
+            } else {
+                ctx.note(&format!("saved {}", saved.path));
+            }
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------- import
+
+fn import_check(ctx: &Ctx) -> Result<(), CliError> {
+    let scan = ctx.scan()?;
+    let book = &scan.book;
+    let mut skipped: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    for s in &scan.skipped {
+        *skipped.entry(s.code).or_insert(0) += 1;
+    }
+    let mut issues: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    let mut with_issues = 0u64;
+    for f in &book.files {
+        if !f.statement.issues.is_empty() {
+            with_issues += 1;
+        }
+        for i in &f.statement.issues {
+            *issues.entry(Issue::code(*i)).or_insert(0) += 1;
+        }
+    }
+    let claims = book.claims();
+    let mut years: Vec<i32> = book
+        .files
+        .iter()
+        .flat_map(|f| f.statement.balances.iter().filter_map(|b| b.plan_year))
+        .collect();
+    years.sort_unstable();
+    years.dedup();
+    let dto = json!({
+        "schema": "import-check/v1",
+        "pdfs": scan.pdfs,
+        "statements": book.files.len(),
+        "synthetic_statements": book.files.iter().filter(|f| f.statement.synthetic).count(),
+        "skipped": skipped,
+        "members": book.members().len(),
+        "claims": claims.len(),
+        "claims_without_number": claims.iter().filter(|c| c.claim_number.is_none()).count(),
+        "reprocessed_claims": claims.iter().filter(|c| c.versions > 1).count(),
+        "claim_lines": claims.iter().map(|c| c.claim.lines.len()).sum::<usize>(),
+        "balance_rows": book.files.iter().flat_map(|f| f.statement.balances.iter()).map(|b| b.rows.len()).sum::<usize>(),
+        "plan_years": years,
+        "statements_with_issues": with_issues,
+        "issues": issues,
+        "ok": with_issues == 0,
+    });
+    output::emit_one(ctx.json(), "import-check/v1", dto);
+    Ok(())
+}

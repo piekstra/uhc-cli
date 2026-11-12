@@ -1,0 +1,15 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+.DS_Store
+
+# Never commit real UnitedHealthcare data: no downloaded EOBs, claim
+# spreadsheets, portal captures or HAR files. Fixtures are synthetic
+# (tests/fixtures/README.md).
+/captures
+*.har
+*.raw.json
+*.raw.html
+*.pdf
+*.csv
+*.xlsx

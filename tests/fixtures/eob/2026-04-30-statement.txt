@@ -1,0 +1,56 @@
+   SYNTHETIC TEST DATA - NOT A REAL STATEMENT
+   UnitedHealthcare                                                          Explanation of Benefits
+                                                                             Member/Patient:   ALEX EXAMPLE
+                                                                             Member ID:        SYNM000001
+                                                                             Relationship:     EE
+                                                                             Group name:       EXAMPLE EMPLOYER
+                                                                             Group number:     SYNG0001
+
+   Hi, ALEX.                                                                 Claim summary
+   THIS IS NOT A BILL. This Explanation of Benefits (EOB) is a summary of    Services in this statement occurred
+   services received and how plan benefits were applied.                     between Apr. 1, 2026 - Apr. 3, 2026
+                                                                             Provider billed             $1,900.00
+                                                                             Your total amount owed        $955.00
+   Plan balances
+                     As of 04/30/2026 for plan year 2026
+
+    Balances for ALEX                                        Maximum         Progress so far        Remaining
+                                                              amount                                  amount
+         Network           Deductible                       $1,500.00          $1,500.00                  Met
+                           Out-of-pocket limit              $4,000.00          $1,860.00            $2,140.00
+         Out-of-Network    Deductible                       $3,000.00            $300.00            $2,700.00
+                           Out-of-pocket limit              $8,000.00            $300.00            $7,700.00
+
+    Balances for FAMILY                                      Maximum         Progress so far        Remaining
+                                                              amount                                  amount
+         Network           Deductible                       $3,000.00          $1,500.00            $1,500.00
+                           Out-of-pocket limit              $8,000.00          $1,860.00            $6,140.00
+         Out-of-Network    Deductible                       $6,000.00            $300.00            $5,700.00
+                           Out-of-pocket limit             $16,000.00            $300.00           $15,700.00
+
+   STD-EOB
+   000000000000000-A-S-PS-E
+   Page 1 of 2
+
+   04/30/2026
+
+   Claim detail for ALEX
+   Provider: SAMPLE IMAGING CENTER                                           Patient account number: SYNA0003
+   Status: Out-of-Network                                                    Claim number: SYNC00000003
+
+   MRI WITHOUT CONTRAST
+                                     2Q B1  $1,500.00       $0.00   $1,200.00     $600.00     $300.00      $0.00    $300.00       $0.00     $600.00
+   04/01/2026 - 04/03/2026
+   FACILITY FEE                      B1       $400.00       $0.00       $0.00       $0.00       $0.00      $0.00      $0.00     $355.00     $355.00
+   04/01/2026
+
+   Total amount                             $1,900.00       $0.00   $1,200.00     $600.00     $300.00      $0.00    $300.00     $355.00     $955.00
+
+   Explanation of your claim processing codes
+   2Q -- THE AMOUNT ALLOWED WAS REDUCED UNDER A PAYMENT POLICY.      B1 -- THIS SERVICE IS NOT COVERED OUT OF NETWORK.
+
+   STD-EOB
+   000000000000000-A-S-PS-E
+   Page 2 of 2
+
+   04/30/2026

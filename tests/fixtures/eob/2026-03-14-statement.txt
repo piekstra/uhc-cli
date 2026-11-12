@@ -1,0 +1,92 @@
+   SYNTHETIC TEST DATA - NOT A REAL STATEMENT
+   UnitedHealthcare                                                          Explanation of Benefits
+   Service Center
+                                                                             Member/Patient:   ALEX EXAMPLE
+                                                                             Member ID:        SYNM000001
+                                                                             Relationship:     EE
+                                                                             Group name:       EXAMPLE EMPLOYER
+                                                                             Group number:     SYNG0001
+   ALEX EXAMPLE
+
+   Hi, ALEX.                                                                 Claim summary
+   THIS IS NOT A BILL. This Explanation of Benefits (EOB) is a summary of    Services in this statement occurred
+   services received and how plan benefits were applied.                     between Feb. 2, 2026 - Feb. 20, 2026
+   Visit myuhc.com to see the most up to date amounts.                       Provider billed               $560.00
+                                                                             Your total amount owed        $185.00
+   Plan balances
+                     As of 03/14/2026 for plan year 2026
+
+    Balances for ALEX                                        Maximum         Progress so far        Remaining
+                                                              amount                                  amount
+         Network           Deductible                       $1,500.00            $725.00              $775.00
+                           Out-of-pocket limit              $4,000.00            $905.00            $3,095.00
+         Out-of-Network    Deductible                       $3,000.00              $0.00            $3,000.00
+                           Out-of-pocket limit              $8,000.00              $0.00            $8,000.00
+
+   Got questions?
+   Get in touch with customer service at 888-555-0100
+   STD-EOB
+   000000000000000-A-S-PS-E
+   Page 1 of 3
+
+   03/14/2026
+
+                     As of 03/14/2026 for plan year 2026
+
+    Balances for JORDAN                                      Maximum         Progress so far        Remaining
+                                                              amount                                  amount
+         Network           Deductible                       $1,500.00              $0.00            $1,500.00
+                           Out-of-pocket limit              $4,000.00              $0.00            $4,000.00
+         Out-of-Network    Deductible                       $3,000.00              $0.00            $3,000.00
+                           Out-of-pocket limit              $8,000.00              $0.00            $8,000.00
+
+    Balances for FAMILY                                      Maximum         Progress so far        Remaining
+                                                              amount                                  amount
+         Network           Deductible                       $3,000.00            $725.00            $2,275.00
+                           Out-of-pocket limit              $8,000.00            $905.00            $7,095.00
+         Out-of-Network    Deductible                       $6,000.00              $0.00            $6,000.00
+                           Out-of-pocket limit             $16,000.00              $0.00           $16,000.00
+
+   Definitions of Key Terms
+   Amount saved: You do not owe this amount because you chose a network provider.
+   Deductible: The amount you could owe during a coverage period before your plan begins to pay.
+
+   Claim detail for ALEX
+   Provider: EXAMPLE CLINIC                                                  Patient account number: SYNA0001
+   Status: Network                                                           Claim number: SYNC00000001
+
+                                    Claim     Provider     Amount    Plan allowed    Your     Applied to    Copay   Coinsurance   Plan does   Amount
+   Services received             processing    billed       saved       amount     plan paid  deductible                         not cover   you owe**
+                                   codes
+   OFFICE VISIT                      UG       $250.00     $100.00     $150.00       $0.00     $150.00      $0.00      $0.00       $0.00     $150.00
+   02/02/2026
+   LAB SERVICES                      UG        $60.00      $25.00      $35.00       $0.00      $35.00      $0.00      $0.00       $0.00      $35.00
+   02/02/2026
+
+   Total amount                               $310.00     $125.00     $185.00       $0.00     $185.00      $0.00      $0.00       $0.00     $185.00
+
+   Got questions?
+   Get in touch with customer service at 888-555-0100
+   STD-EOB
+   000000000000000-A-S-PS-E
+   Page 2 of 3
+
+   03/14/2026
+
+   Claim detail for JORDAN
+   Provider: TEST PEDIATRICS                                                 Patient account number: SYNA0002
+   Status: Network                                                           Claim number: SYNC00000002
+
+   WELL CHILD VISIT                  UG       $250.00     $120.00     $130.00     $130.00       $0.00      $0.00      $0.00       $0.00       $0.00
+   02/20/2026
+
+   Total amount                               $250.00     $120.00     $130.00     $130.00       $0.00      $0.00      $0.00       $0.00       $0.00
+
+   Explanation of your claim processing codes
+   UG -- YOU HAVE RECEIVED A DISCOUNT FOR USING A HEALTH CARE PROFESSIONAL IN YOUR PLAN'S NETWORK.
+
+   STD-EOB
+   000000000000000-A-S-PS-E
+   Page 3 of 3
+
+   03/14/2026

@@ -1,0 +1,43 @@
+   SYNTHETIC TEST DATA - NOT A REAL STATEMENT
+   UnitedHealthcare                                                          Explanation of Benefits
+                                                                             Member/Patient:   SAM EXAMPLE
+                                                                             Member ID:        SYNM000001
+                                                                             Relationship:     SP
+                                                                             Group name:       EXAMPLE EMPLOYER
+                                                                             Group number:     SYNG0001
+
+   Hi, SAM.                                                                  Claim summary
+   THIS IS NOT A BILL. This Explanation of Benefits (EOB) is a summary of    Services in this statement occurred
+   services received and how plan benefits were applied.                     between May. 4, 2026 - May. 4, 2026
+                                                                             Provider billed               $180.00
+                                                                             Your total amount owed         $25.00
+   Plan balances
+                     As of 05/08/2026 for plan year 2026
+
+    Balances for SAM                                         Maximum         Progress so far        Remaining
+                                                              amount                                  amount
+         Network           Deductible                       $1,500.00              $0.00            $1,500.00
+                           Out-of-pocket limit              $4,000.00             $25.00            $3,975.00
+         Out-of-Network    Deductible                       $3,000.00              $0.00            $3,000.00
+                           Out-of-pocket limit              $8,000.00              $0.00            $8,000.00
+
+   STD-EOB
+   000000000000000-A-S-PS-E
+   Page 1 of 2
+
+   05/08/2026
+
+   Claim detail for SAM
+   Provider: EXAMPLE CLINIC                                                  Patient account number: SYNA0004
+   Status: Network                                                           Claim number: SYNC00000004
+
+   SPECIALIST VISIT                  UG       $180.00      $70.00     $110.00      $85.00       $0.00     $25.00      $0.00       $0.00      $25.00
+   05/04/2026
+
+   Total amount                               $180.00      $70.00     $110.00      $85.00       $0.00     $25.00      $0.00       $0.00      $25.00
+
+   STD-EOB
+   000000000000000-A-S-PS-E
+   Page 2 of 2
+
+   05/08/2026

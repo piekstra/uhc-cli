@@ -1,0 +1,20 @@
+   SYNTHETIC TEST DATA - NOT A REAL STATEMENT
+   UnitedHealthcare                                                          Explanation of Benefits
+                                                                             Member/Patient:   ALEX EXAMPLE
+                                                                             Relationship:     EE
+   Plan balances
+                     As of 06/01/2026
+
+    Balances for ALEX                                        Maximum         Progress so far        Remaining
+         Network           Deductible                       $1,500.00
+                           Out-of-pocket limit              $4,000.00          $1,900.00            $2,100.00
+
+   Claim detail for ALEX
+   Provider: EXAMPLE CLINIC
+   Status: Network
+
+   OFFICE VISIT                      UG       $250.00     $100.00     $150.00     $150.00       $0.00      $0.00      $0.00       $0.00
+   LAB SERVICES                      UG        $60.00      $25.00      $35.00      $35.00       $0.00      $0.00      $0.00       $0.00       $0.00
+   05/20/2026
+
+   Total amount                               $999.00     $125.00     $185.00     $185.00       $0.00      $0.00      $0.00       $0.00       $0.00
