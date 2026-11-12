@@ -198,7 +198,9 @@ fn identity_fields_in_fixtures_use_dummy_values() {
             check("Claim number:", &|v| shaped(v, "SYNC", 8));
             check("Patient account number:", &|v| shaped(v, "SYNA", 4));
             check("Provider:", &is_dummy_org);
-            check("Claim detail for", &|v| PEOPLE.contains(&v));
+            check("Claim detail for", &|v| {
+                PEOPLE.contains(&v.trim_end_matches(" (continued)"))
+            });
             check("Balances for", &|v| PEOPLE.contains(&v) || v == "FAMILY");
             check("Hi,", &|v| PEOPLE.contains(&v.trim_end_matches('.')));
         }

@@ -55,7 +55,9 @@ impl Cents {
 impl std::ops::Add for Cents {
     type Output = Cents;
     fn add(self, rhs: Cents) -> Cents {
-        Cents(self.0 + rhs.0)
+        // Statement amounts are far from the limit; a corrupt one saturates
+        // rather than wrapping or panicking.
+        Cents(self.0.saturating_add(rhs.0))
     }
 }
 

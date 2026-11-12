@@ -12,8 +12,9 @@ use pk_cli_core::CliError;
 use crate::eob;
 use crate::model::{Book, StatementFile};
 
-/// Largest file read.
-pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+/// Largest file read. Base64 in the stream adds a third, and a resource
+/// line may be 64 MiB, so a statement up to this size always fits.
+pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 /// Largest text taken from `pdftotext`.
 const MAX_TEXT_BYTES: usize = 20 * 1024 * 1024;
 const PDFTOTEXT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -145,10 +146,11 @@ fn extract_text(tool: &str, path: &Path) -> Result<Option<String>, CliError> {
             ))
         })?;
     let mut stdout = child.stdout.take().expect("piped stdout");
-    let reader = std::thread::spawn(move || {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = (&mut stdout).take(MAX_TEXT_BYTES as u64 + 1).read_to_end(&mut buf);
-        buf
+        let _ = tx.send(buf);
     });
     let deadline = Instant::now() + PDFTOTEXT_TIMEOUT;
     let status = loop {
@@ -162,7 +164,16 @@ fn extract_text(tool: &str, path: &Path) -> Result<Option<String>, CliError> {
             }
         }
     };
-    let buf = reader.join().unwrap_or_default();
+    // The reader ends when every writer closes the pipe. A process the tool
+    // left behind may hold it open, so the wait is bounded by the same
+    // deadline (at least a second after exit, for the last of the output).
+    let wait = deadline
+        .saturating_duration_since(Instant::now())
+        .max(Duration::from_secs(1));
+    let buf = match status {
+        Some(_) => rx.recv_timeout(wait).unwrap_or_default(),
+        None => rx.recv_timeout(Duration::from_secs(1)).unwrap_or_default(),
+    };
     match status {
         Some(s) if s.success() && buf.len() <= MAX_TEXT_BYTES => Ok(Some(String::from_utf8_lossy(&buf).into_owned())),
         _ => Ok(None),

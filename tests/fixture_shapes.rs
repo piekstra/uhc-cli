@@ -137,3 +137,51 @@ fn a_damaged_statement_reports_each_problem_and_keeps_what_it_can() {
         "falls back to the balances' As of"
     );
 }
+
+#[test]
+fn a_claim_continued_across_a_page_break_stays_one_claim() {
+    let st = eob::parse(&fixture("2026-07-10-continued-statement.txt"));
+    assert!(st.issues.is_empty(), "{:?}", st.issues);
+    assert_eq!(st.claims.len(), 1, "the repeated header continues the claim");
+    let c = &st.claims[0];
+    assert_eq!(c.claim_number.as_deref(), Some("SYNC00000005"));
+    let descriptions: Vec<&str> = c.lines.iter().map(|l| l.description.as_str()).collect();
+    assert_eq!(
+        descriptions,
+        [
+            "EMERGENCY ROOM VISIT HIGH COMPLEXITY",
+            "LAB PANEL",
+            "BILLING ADJUSTMENT FOR A PRIOR OVERPAYMENT"
+        ],
+        "wrapped text above and below the amounts is kept"
+    );
+    let adjustment = &c.lines[2].amounts;
+    assert_eq!(adjustment.you_owe, Cents(-1000), "`- $10.00` is a credit");
+    assert_eq!(adjustment.not_covered, Cents(-1000));
+    let total = c.total.unwrap();
+    assert_eq!(total.you_owe, usd("$70.00"));
+    assert_eq!(st.total_owed, Some(usd("$70.00")));
+}
+
+#[test]
+fn a_repeated_header_naming_another_claim_starts_it() {
+    // The first block lacks its total; the next names a different claim.
+    let text = fixture("2026-07-10-continued-statement.txt").replacen(
+        "Claim number: SYNC00000005\n\n   LAB",
+        "Claim number: SYNC00000006\n\n   LAB",
+        1,
+    );
+    let st = eob::parse(&text);
+    let numbers: Vec<_> = st.claims.iter().map(|c| c.claim_number.as_deref()).collect();
+    assert_eq!(numbers, [Some("SYNC00000005"), Some("SYNC00000006")]);
+    assert!(st.issues.contains(&Issue::ClaimWithoutTotal));
+}
+
+#[test]
+fn unusual_whitespace_does_not_panic() {
+    let text = fixture("2026-05-08-statement.txt")
+        .replace("UG -- ", "UG\u{1680}-- ")
+        .replace("   SPECIALIST", "\u{1680}\u{00a0} SPECIALIST");
+    let st = eob::parse(&text);
+    assert_eq!(st.claims.len(), 1);
+}

@@ -112,8 +112,9 @@ pub enum RecordsCmd {
 pub struct ExportArgs {
     #[command(flatten)]
     pub who: PatientArg,
-    /// Only claims whose service began on or after this day, and statements
-    /// dated on or after it (YYYY-MM-DD).
+    /// Only what changed since this day (YYYY-MM-DD): claims whose latest
+    /// statement is dated on or after it, and the statements dated on or
+    /// after it.
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub since: Option<String>,
     /// Write the stream to stdout (`| medrec import --from uhc`).
@@ -172,13 +173,15 @@ pub struct DownloadArgs {
     /// The document id from `uhc documents list`.
     #[arg(required_unless_present = "all", conflicts_with = "all")]
     pub id: Option<String>,
-    /// Every statement.
+    /// Every statement. Ones already saved in the folder (same bytes) are
+    /// skipped, listed in skipped[] with code `exists`, unless --overwrite.
     #[arg(long)]
     pub all: bool,
     /// The file to write (`-` for stdout), or with `--all` the folder.
     #[arg(short, long, value_name = "PATH")]
     pub output: Option<PathBuf>,
-    /// Replace a file that is already there.
+    /// Replace a file that is already there. Without it, one document onto
+    /// an existing file is a usage error (exit 2).
     #[arg(long)]
     pub overwrite: bool,
 }

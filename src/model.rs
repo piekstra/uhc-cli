@@ -59,6 +59,8 @@ pub struct Member {
 }
 
 pub const ORGANIZATION: &str = "uhc";
+/// The stand-in member id of a statement that prints none.
+pub const UNKNOWN_MEMBER_PREFIX: &str = "unknown-";
 pub const ORGANIZATION_NAME: &str = "UnitedHealthcare";
 
 /// A claim as of the latest statement that carries it.
@@ -77,6 +79,8 @@ pub struct ClaimRecord {
     pub document: String,
     /// How many statements carry this claim (more than one: reprocessed).
     pub versions: u64,
+    /// Every statement carrying it, oldest first; `document` is the last.
+    pub documents: Vec<String>,
     pub codes: BTreeMap<String, String>,
 }
 
@@ -158,7 +162,7 @@ impl Book {
             .member
             .member_id
             .clone()
-            .unwrap_or_else(|| format!("unknown-{}", &f.id[..8]))
+            .unwrap_or_else(|| format!("{UNKNOWN_MEMBER_PREFIX}{}", &f.id[..8]))
     }
 
     pub fn members(&self) -> Vec<Member> {
@@ -249,7 +253,27 @@ impl Book {
                     .total
                     .unwrap_or_else(|| c.lines.iter().map(|l| l.amounts).fold(Amounts::default(), |a, b| a + b));
                 let (start, end) = service_range(&c.lines);
+                // The same claim number twice on one statement is one claim
+                // whose blocks the parser could not join: its lines together.
+                if let Some(r) = by_key.get_mut(&key).filter(|r| r.document == f.id) {
+                    r.claim.lines.extend(c.lines.iter().cloned());
+                    if r.claim.total.is_none() {
+                        r.claim.total = c.total;
+                    }
+                    r.totals = r.claim.total.unwrap_or_else(|| {
+                        r.claim
+                            .lines
+                            .iter()
+                            .map(|l| l.amounts)
+                            .fold(Amounts::default(), |a, b| a + b)
+                    });
+                    let (start, end) = service_range(&r.claim.lines);
+                    (r.service_start, r.service_end) = (start, end);
+                    continue;
+                }
                 let versions = by_key.get(&key).map(|r| r.versions + 1).unwrap_or(1);
+                let mut documents = by_key.get(&key).map(|r| r.documents.clone()).unwrap_or_default();
+                documents.push(f.id.clone());
                 let codes = c
                     .lines
                     .iter()
@@ -271,6 +295,7 @@ impl Book {
                         statement_date: st.statement_date.clone(),
                         document: f.id.clone(),
                         versions,
+                        documents,
                         codes,
                     },
                 );
