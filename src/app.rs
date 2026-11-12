@@ -520,9 +520,7 @@ fn export(ctx: &Ctx, args: &ExportArgs) -> Result<(), CliError> {
         // stream to records.ndjson, and an incomplete one to
         // records.incomplete.ndjson, keeping the last complete export. A
         // write error drops the export uncommitted, which removes the file.
-        let mut export = create_export_file(dir)?;
-        let finished = write_stream(std::io::BufWriter::new(&mut export), &scan.book, m, since)?;
-        let path = export.commit(&finished)?;
+        let (path, finished) = export_to_dir(dir, &scan.book, m, since)?;
         let summary = RecordsExport::new(path.display().to_string(), &finished);
         if ctx.json() {
             output::json(&serde_json::to_value(&summary).unwrap_or_default());
@@ -550,6 +548,16 @@ fn export(ctx: &Ctx, args: &ExportArgs) -> Result<(), CliError> {
             std::process::exit(e.exit_code());
         }
     }
+}
+
+/// `records export -o DIR`: the stream written beside `DIR/records.ndjson`
+/// and committed once finished (complete to `records.ndjson`, incomplete to
+/// `records.incomplete.ndjson`). Where it went, and what was written.
+fn export_to_dir(dir: &Path, book: &Book, m: &Member, since: Option<&str>) -> Result<(PathBuf, Finished), CliError> {
+    let mut export = create_export_file(dir)?;
+    let finished = write_stream(std::io::BufWriter::new(&mut export), book, m, since)?;
+    let path = export.commit(&finished)?;
+    Ok((path, finished))
 }
 
 fn write_stream<W: Write>(out: W, book: &Book, m: &Member, since: Option<&str>) -> Result<Finished, CliError> {
@@ -1098,4 +1106,56 @@ fn import_check(ctx: &Ctx) -> Result<(), CliError> {
     });
     output::emit_one(ctx.json(), "import-check/v1", dto);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::StatementFile;
+
+    fn book_at(path: PathBuf) -> Book {
+        let text = include_str!("../tests/fixtures/eob/2026-04-30-statement.txt");
+        Book {
+            files: vec![StatementFile {
+                id: "0123456789abcdef".into(),
+                sha256: "0".repeat(64),
+                path,
+                bytes: 1,
+                statement: crate::eob::parse(text),
+            }],
+        }
+    }
+
+    #[test]
+    fn an_incomplete_export_keeps_the_last_complete_one() {
+        let dir = std::env::temp_dir().join(format!("uhc-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pdf = dir.join("statement.pdf");
+        std::fs::write(&pdf, b"%PDF-1.4 synthetic").unwrap();
+        let book = book_at(pdf.clone());
+        let m = book.members().into_iter().find(|m| m.label == "Alex").unwrap();
+
+        let (path, finished) = export_to_dir(&dir.join("out"), &book, &m, None).unwrap();
+        assert!(finished.trailer.complete);
+        assert_eq!(path, dir.join("out").join(pk_med_records::EXPORT_FILE));
+        let complete = std::fs::read(&path).unwrap();
+
+        // The statement is gone when the export reads it again: the stream
+        // ends incomplete, beside the complete one, which stays as it was.
+        std::fs::remove_file(&pdf).unwrap();
+        let (path, finished) = export_to_dir(&dir.join("out"), &book, &m, None).unwrap();
+        assert!(!finished.trailer.complete);
+        assert_eq!(path, dir.join("out").join(pk_med_records::INCOMPLETE_FILE));
+        assert_eq!(
+            std::fs::read(dir.join("out").join(pk_med_records::EXPORT_FILE)).unwrap(),
+            complete
+        );
+        let mut names: Vec<String> = std::fs::read_dir(dir.join("out"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, [pk_med_records::INCOMPLETE_FILE, pk_med_records::EXPORT_FILE]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
