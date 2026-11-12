@@ -74,8 +74,10 @@ amount, processing codes as notes, the plan balances the statement printed as
 `docs/fhir.md` has the mapping.
 
 `-o DIR` writes the stream to `DIR/records.ndjson` instead (mode 0600,
-replaced by a rename; a symbolic link there is refused) and prints
-`records-export/v1`. It is for folders of synthetic statements only; real
+written under a temporary name and renamed into place; a symbolic link
+there is refused) and prints `records-export/v1`. A stream that ends
+incomplete goes to `DIR/records.incomplete.ndjson` and the last complete
+export stays. It is for folders of synthetic statements only; real
 records go straight into medrec.
 
 The stream, `patients list` and the `documents/v1` rows are medical-common's

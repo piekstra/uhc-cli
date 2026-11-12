@@ -515,10 +515,14 @@ fn export(ctx: &Ctx, args: &ExportArgs) -> Result<(), CliError> {
                 m.id
             )));
         }
-        // Created 0600 under a temporary name and renamed into place; a
-        // symbolic link at records.ndjson is refused (exit 2).
-        let (path, file) = create_export_file(dir)?;
-        let finished = write_stream(std::io::BufWriter::new(file), &scan.book, m, since)?;
+        // Written 0600 under a temporary name; a symbolic link at
+        // records.ndjson is refused (exit 2). The commit renames a complete
+        // stream to records.ndjson, and an incomplete one to
+        // records.incomplete.ndjson, keeping the last complete export. A
+        // write error drops the export uncommitted, which removes the file.
+        let mut export = create_export_file(dir)?;
+        let finished = write_stream(std::io::BufWriter::new(&mut export), &scan.book, m, since)?;
+        let path = export.commit(&finished)?;
         let summary = RecordsExport::new(path.display().to_string(), &finished);
         if ctx.json() {
             output::json(&serde_json::to_value(&summary).unwrap_or_default());
