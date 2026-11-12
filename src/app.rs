@@ -8,7 +8,7 @@ use pk_cli_auth::AuthStatus;
 use pk_cli_config::ConfigStore;
 use pk_cli_core::info::{AuthInfo, CliInfo};
 use pk_cli_core::{dates, output, resolve, CliError, Paged, RangeArgs};
-use pk_cli_documents::{fs_safe, verify_pdf, Document, DownloadBatch, SavedDocument};
+use pk_cli_documents::{fs_safe, verify_pdf, Document, DownloadBatch, SavedDocument, SkippedDocument};
 use pk_cli_selfupdate::Updater;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -646,7 +646,12 @@ fn document_of(f: &StatementFile) -> Document {
     );
     d.date = f.statement.statement_date.clone();
     d.category = Some("eob".into());
-    d.file = f.path.file_name().and_then(|n| n.to_str()).map(fs_safe);
+    // The member's own file name, made safe, keeping its extension.
+    d.file = f
+        .path
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .map(|stem| format!("{}.pdf", fs_safe(stem)));
     d
 }
 
@@ -728,6 +733,7 @@ fn documents_download(ctx: &Ctx, args: &DownloadArgs) -> Result<(), CliError> {
         }
         std::fs::create_dir_all(&dir).map_err(|e| CliError::Other(format!("creating {}: {e}", dir.display())))?;
         let mut saved = Vec::new();
+        let mut skipped = Vec::new();
         let mut used = std::collections::HashSet::new();
         for f in &scan.book.files {
             let bytes = std::fs::read(&f.path).map_err(|e| CliError::Other(format!("reading a statement: {e}")))?;
@@ -738,6 +744,13 @@ fn documents_download(ctx: &Ctx, args: &DownloadArgs) -> Result<(), CliError> {
                 used.insert(name.clone());
             }
             let path = dir.join(&name);
+            // A re-run saves only what is new; --overwrite replaces the rest.
+            if !args.overwrite && std::fs::symlink_metadata(&path).is_ok() {
+                skipped.push(
+                    SkippedDocument::new(f.id.clone(), "already saved; --overwrite replaces it").with_code("exists"),
+                );
+                continue;
+            }
             write_private(&path, &bytes, args.overwrite)?;
             saved.push(SavedDocument::from_document(
                 &document_of(f),
@@ -745,11 +758,15 @@ fn documents_download(ctx: &Ctx, args: &DownloadArgs) -> Result<(), CliError> {
                 bytes.len() as u64,
             ));
         }
-        let batch = DownloadBatch::new(dir.display().to_string(), saved);
+        let kept = skipped.len();
+        let batch = DownloadBatch::new(dir.display().to_string(), saved).with_skipped(skipped);
         if ctx.json() {
             output::json(&serde_json::to_value(&batch).unwrap_or_default());
         } else {
-            ctx.note(&format!("saved {} statement(s) to {}", batch.count, batch.dir));
+            ctx.note(&format!(
+                "saved {} statement(s) to {}; {kept} already there",
+                batch.count, batch.dir
+            ));
         }
         return Ok(());
     }

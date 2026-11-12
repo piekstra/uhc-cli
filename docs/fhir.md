@@ -39,6 +39,7 @@ statement's version; `versions` in `claims list` counts them.
 | Element | From |
 | --- | --- |
 | `identifier` (`uc`) | Claim number |
+| `type.text` | "Medical claim": the statement prints no claim type, so there is no `claim-type` code |
 | `billablePeriod` | the first service line's date to the last |
 | `created` | the statement date |
 | `provider.display` | Provider |
@@ -49,7 +50,8 @@ statement's version; `versions` in `claims list` counts them.
 | `processNote[]` | "XX -- text", numbered in code order |
 | `benefitBalance[]` | the plan balances on the claim's statement: one per network (in, out) and unit (individual, family), term annual; `financial[]` deductible and out-of-pocket limit with `allowedMoney` (the maximum) and `usedMoney` (progress so far) |
 
-The nine amounts and their adjudication categories:
+The nine amounts and their adjudication categories, each coding with its
+code system's display text:
 
 | Statement column | Category |
 | --- | --- |

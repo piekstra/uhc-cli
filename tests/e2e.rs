@@ -171,6 +171,8 @@ fn records_export_is_a_complete_stream_whose_references_resolve() {
         .find(|t| t["category"]["coding"][0]["code"] == "memberliability")
         .unwrap();
     assert_eq!(owed["amount"]["value"], 955.0);
+    assert_eq!(owed["category"]["coding"][0]["display"], "Member liability");
+    assert_eq!(eob["type"]["text"], "Medical claim");
     assert!(eob["benefitBalance"]
         .as_array()
         .unwrap()
@@ -342,6 +344,8 @@ fn documents_list_and_download() {
     let saved = json_of(uhc(&dir).args(["documents", "download", &id[..8], "-o"]).arg(&out));
     assert_eq!(saved["schema"], "document-download/v1");
     let path = PathBuf::from(saved["path"].as_str().unwrap());
+    assert_eq!(path.file_name().unwrap(), "2026-05-08-statement.pdf");
+    assert_eq!(items[0]["file"], "2026-05-08-statement.pdf");
     assert_eq!(
         std::fs::read(&path).unwrap(),
         std::fs::read(dir.join("2026-05-08-statement.pdf")).unwrap()
@@ -373,6 +377,17 @@ fn documents_list_and_download() {
     let batch = json_of(uhc(&dir).args(["documents", "download", "--all", "-o"]).arg(&all));
     assert_eq!(batch["schema"], "document-download-batch/v1");
     assert_eq!(batch["count"], 3);
+    // A re-run saves nothing new and says what it kept.
+    let again = json_of(uhc(&dir).args(["documents", "download", "--all", "-o"]).arg(&all));
+    assert_eq!(again["count"], 0);
+    assert_eq!(again["skipped"].as_array().unwrap().len(), 3);
+    assert_eq!(again["skipped"][0]["code"], "exists");
+    let replaced = json_of(
+        uhc(&dir)
+            .args(["documents", "download", "--all", "--overwrite", "-o"])
+            .arg(&all),
+    );
+    assert_eq!(replaced["count"], 3);
 
     uhc(&dir).args(["documents", "download", "abc"]).assert().code(2);
     uhc(&dir)
@@ -459,4 +474,44 @@ fn statements_that_cannot_be_read_are_an_upstream_error() {
     assert_eq!(v["issues"]["no_claims"], 1);
     let v = json_of(uhc(&dir).args(["documents", "list"]));
     assert_eq!(v["items"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_reprocessed_claim_is_its_latest_statement() {
+    need_pdftotext!();
+    let dir = statements(&["2026-05-08-statement.txt"]);
+    let later = fixture_text("2026-05-08-statement.txt")
+        .replace("05/08/2026", "06/15/2026")
+        .replace("$25.00", "$30.00");
+    std::fs::write(dir.join("reprocessed.pdf"), uhc::synth::text_pdf(&later)).unwrap();
+    let v = json_of(uhc(&dir).args(["claims", "list"]));
+    let items = v["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["versions"], 2);
+    assert_eq!(items[0]["statement_date"], "2026-06-15");
+    assert_eq!(items[0]["copay"]["amount"], "30.00");
+    let check = json_of(uhc(&dir).args(["import", "check"]));
+    assert_eq!(check["reprocessed_claims"], 1);
+    // The stream carries the claim once, and both statements.
+    let out = uhc(&dir)
+        .args(["records", "export", "--patient", "sam", "--ndjson"])
+        .assert()
+        .success();
+    let text = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let trailer: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    assert_eq!(trailer["counts"]["ExplanationOfBenefit"], 1);
+}
+
+#[test]
+fn the_same_pdf_saved_twice_is_one_statement() {
+    need_pdftotext!();
+    let dir = statements(&["2026-05-08-statement.txt"]);
+    std::fs::copy(
+        dir.join("2026-05-08-statement.pdf"),
+        dir.join("2026-05-08-statement (1).pdf"),
+    )
+    .unwrap();
+    let v = json_of(uhc(&dir).args(["import", "check"]));
+    assert_eq!(v["pdfs"], 2);
+    assert_eq!(v["statements"], 1);
 }

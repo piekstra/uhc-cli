@@ -109,21 +109,27 @@ pub fn coverage(m: &Member) -> Value {
     v
 }
 
-/// The adjudication entries of a line or a claim, CARIN's categories.
+/// The adjudication entries of a line or a claim: CARIN's categories, with
+/// their code systems' display text.
 fn adjudication(a: &Amounts) -> Vec<Value> {
-    let rows: [(&str, &str, Cents); 9] = [
-        (HL7_ADJUDICATION, "submitted", a.billed),
-        (C4BB_ADJUDICATION, "discount", a.saved),
-        (HL7_ADJUDICATION, "eligible", a.allowed),
-        (HL7_ADJUDICATION, "benefit", a.plan_paid),
-        (HL7_ADJUDICATION, "deductible", a.deductible),
-        (HL7_ADJUDICATION, "copay", a.copay),
-        (C4BB_ADJUDICATION, "coinsurance", a.coinsurance),
-        (C4BB_ADJUDICATION, "noncovered", a.not_covered),
-        (C4BB_ADJUDICATION, "memberliability", a.you_owe),
+    let rows: [(&str, &str, &str, Cents); 9] = [
+        (HL7_ADJUDICATION, "submitted", "Submitted Amount", a.billed),
+        (C4BB_ADJUDICATION, "discount", "Discount", a.saved),
+        (HL7_ADJUDICATION, "eligible", "Eligible Amount", a.allowed),
+        (HL7_ADJUDICATION, "benefit", "Benefit Amount", a.plan_paid),
+        (HL7_ADJUDICATION, "deductible", "Deductible", a.deductible),
+        (HL7_ADJUDICATION, "copay", "CoPay", a.copay),
+        (C4BB_ADJUDICATION, "coinsurance", "Coinsurance", a.coinsurance),
+        (C4BB_ADJUDICATION, "noncovered", "Noncovered", a.not_covered),
+        (C4BB_ADJUDICATION, "memberliability", "Member liability", a.you_owe),
     ];
     rows.iter()
-        .map(|(system, code, amount)| json!({ "category": coding(system, code), "amount": money(*amount) }))
+        .map(|(system, code, display, amount)| {
+            json!({
+                "category": { "coding": [{ "system": system, "code": code, "display": display }] },
+                "amount": money(*amount),
+            })
+        })
         .collect()
 }
 
@@ -151,7 +157,9 @@ pub fn explanation_of_benefit(c: &ClaimRecord, coverage: &str, balances: &[&Bala
         }]);
     }
     v["status"] = "active".into();
-    v["type"] = json!({ "text": "Claim (the statement does not print its type)" });
+    // A medical EOB statement; it does not print whether a claim is
+    // professional or institutional, so there is no claim-type code.
+    v["type"] = json!({ "text": "Medical claim" });
     v["use"] = "claim".into();
     v["patient"] = json!({ "reference": format!("Patient/{}", c.patient) });
     if let Some(start) = &c.service_start {
